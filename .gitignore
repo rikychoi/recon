@@ -1,0 +1,30 @@
+# Binary outputs
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build
+backend/bin/
+backend/dist/
+
+# Frontend / Node
+node_modules/
+.next/
+dist/
+build/
+.cache/
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
