@@ -18,15 +18,21 @@ type Recon interface {
 type Orchestrator struct {
 	dns  DNSResolver          // DNS/메일 서버 조회
 	subs SubdomainScanner     // 서브도메인 열거
+	port PortScanner          // 포트 스캔
 	vuln VulnerabilityScanner // 취약점 점검
 }
 
 // NewOrchestrator는 주어진 스캐너들로 Orchestrator를 생성한다.
 func NewOrchestrator(dns DNSResolver, subs SubdomainScanner, vuln VulnerabilityScanner) *Orchestrator {
-	return &Orchestrator{dns: dns, subs: subs, vuln: vuln}
+	return NewOrchestratorWithPortScan(dns, subs, nil, vuln)
 }
 
-// Run은 DNS 조회 → 서브도메인 열거 → 취약점 점검 순으로 실행하여 결과를 집계한다.
+// NewOrchestratorWithPortScan은 포트 스캔 단계가 포함된 Orchestrator를 생성한다.
+func NewOrchestratorWithPortScan(dns DNSResolver, subs SubdomainScanner, port PortScanner, vuln VulnerabilityScanner) *Orchestrator {
+	return &Orchestrator{dns: dns, subs: subs, port: port, vuln: vuln}
+}
+
+// Run은 DNS 조회 → 서브도메인 열거 → 포트 스캔 → 취약점 점검 순으로 실행하여 결과를 집계한다.
 func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult, error) {
 	result := model.ScanResult{Target: domain, StartedAt: time.Now()}
 	result.Asset.Domain = domain
@@ -46,7 +52,18 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 		}
 	}
 
-	// 3) 취약점 점검 (대상: 루트 도메인 + 발견된 서브도메인)
+	// 3) 포트 스캔 (대상: 루트 도메인 + 발견된 서브도메인)
+	if o.port != nil {
+		targets := []string{domain}
+		for _, s := range result.Asset.Subdomains {
+			targets = append(targets, s.Name)
+		}
+		if ports, err := o.port.Scan(ctx, targets); err == nil {
+			result.Asset.Ports = ports
+		}
+	}
+
+	// 4) 취약점 점검 (대상: 루트 도메인 + 발견된 서브도메인)
 	if o.vuln != nil {
 		targets := []string{domain}
 		for _, s := range result.Asset.Subdomains {

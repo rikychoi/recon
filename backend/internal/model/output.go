@@ -69,6 +69,13 @@ func (TextFormatter) Format(w io.Writer, r ScanResult) error {
 	}
 	fmt.Fprintln(w)
 
+	// 포트
+	fmt.Fprintf(w, "[포트] (%d개)\n", len(r.Asset.Ports))
+	for _, p := range r.Asset.Ports {
+		fmt.Fprintf(w, "  - %s/%s %d %s %s\n", p.Target, p.Protocol, p.Number, p.State, p.Service)
+	}
+	fmt.Fprintln(w)
+
 	// 취약점 (CVSS 높은 순 정렬)
 	vulns := append([]Vulnerability(nil), r.Vulnerabilities...)
 	sort.Slice(vulns, func(i, j int) bool { return vulns[i].CVSS > vulns[j].CVSS })

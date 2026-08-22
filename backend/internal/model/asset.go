@@ -20,10 +20,20 @@ type DNSRecord struct {
 	Value string `json:"value"` // 레코드 값
 }
 
+// Port는 포트 스캔으로 식별된 열린 포트를 표현한다.
+type Port struct {
+	Target   string `json:"target"`   // 포트를 스캔한 대상(hostname 또는 IP)
+	Number   int    `json:"number"`   // 포트 번호
+	Protocol string `json:"protocol"` // 프로토콜 (tcp/udp)
+	State    string `json:"state"`    // 포트 상태 (open|filtered 등)
+	Service  string `json:"service"`  // 서비스 명
+}
+
 // Asset는 대상 도메인에 대해 식별된 자산 정보를 한데 모은다.
 type Asset struct {
 	Domain      string       `json:"domain"`       // 점검 대상 루트 도메인
 	Subdomains  []Subdomain  `json:"subdomains"`   // 발견된 서브도메인 목록
 	MailServers []MailServer `json:"mail_servers"` // 메일 서버(MX) 목록
 	DNSRecords  []DNSRecord  `json:"dns_records"`  // 수집된 DNS 레코드 목록
+	Ports       []Port       `json:"ports"`        // 포트 스캔 결과
 }

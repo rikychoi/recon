@@ -20,6 +20,12 @@ type SubdomainScanner interface {
 	Enumerate(ctx context.Context, domain string) ([]model.Subdomain, error)
 }
 
+// PortScanner는 대상 목록을 포트 스캔하여 열린 포트를 식별한다.
+type PortScanner interface {
+	// Scan은 대상 목록에 대해 포트 스캔을 수행하고 결과를 반환한다.
+	Scan(ctx context.Context, targets []string) ([]model.Port, error)
+}
+
 // VulnerabilityScanner는 대상 목록에 대해 취약점을 점검한다.
 type VulnerabilityScanner interface {
 	// Scan은 대상 목록에 대해 취약점을 점검하여 결과를 반환한다.

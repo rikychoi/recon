@@ -42,17 +42,30 @@ func (f *fakeVuln) Scan(ctx context.Context, targets []string) ([]model.Vulnerab
 	return f.vulns, nil
 }
 
-// TestOrchestratorRun은 자산 식별 → 취약점 점검 흐름이 순서대로 이어지고
-// 취약점 스캐너에 루트 도메인 + 서브도메인이 전달되는지 검증한다.
+// fakePorts는 고정된 포트 정보를 반환하는 PortScanner 페이크이다.
+type fakePorts struct {
+	ports []model.Port
+	err   error
+}
+
+func (f fakePorts) Scan(ctx context.Context, targets []string) ([]model.Port, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.ports, nil
+}
+
+// TestOrchestratorRun은 자산 식별 → 포트 스캔 → 취약점 점검 흐름이 순서대로 이어지는지 검증한다.
 func TestOrchestratorRun(t *testing.T) {
 	dns := fakeDNS{
 		records: []model.DNSRecord{{Type: "MX", Name: "example.com", Value: "mx.example.com"}},
 		mails:   []model.MailServer{{Host: "mx.example.com", Preference: 10}},
 	}
 	subs := fakeSubs{subs: []model.Subdomain{{Name: "www.example.com", IPs: []string{"1.2.3.4"}}}}
+	ports := fakePorts{ports: []model.Port{{Target: "example.com", Number: 443, Protocol: "tcp", State: "open", Service: "https"}}}
 	vuln := &fakeVuln{vulns: []model.Vulnerability{{ID: "cve-x", CVSS: 9.1, Severity: "critical"}}}
 
-	orch := NewOrchestrator(dns, subs, vuln)
+	orch := NewOrchestratorWithPortScan(dns, subs, ports, vuln)
 	result, err := orch.Run(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("Run 오류: %v", err)
@@ -63,6 +76,9 @@ func TestOrchestratorRun(t *testing.T) {
 	}
 	if len(result.Asset.Subdomains) != 1 || len(result.Asset.MailServers) != 1 {
 		t.Errorf("자산 식별 결과 집계 오류: %+v", result.Asset)
+	}
+	if len(result.Asset.Ports) != 1 || result.Asset.Ports[0].Number != 443 {
+		t.Errorf("포트 스캔 결과 집계 오류: %+v", result.Asset.Ports)
 	}
 	if len(result.Vulnerabilities) != 1 {
 		t.Errorf("취약점 집계 오류: %+v", result.Vulnerabilities)
