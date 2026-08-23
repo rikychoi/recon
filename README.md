@@ -41,16 +41,93 @@ DNS / 메일 서버 조회
 | `nuclei`      | 템플릿 취약점 스캔  | `-nuclei`/`-full` 시   |
 | `msfconsole`  | 취약점 검증         | `-msf`/`-full` 시      |
 
-DNS 조회와 서브도메인 열거는 외부 도구 없이 동작합니다.
+DNS 조회와 서브도메인 열거는 외부 도구 없이 동작합니다. 외부 도구 설치 방법은
+아래 [외부 도구 세팅](#외부-도구-세팅)을 참고하세요.
 
-Linux 설치 예시:
+## 외부 도구 세팅
+
+`recon`은 실행 시 활성화된 단계에 필요한 도구가 없으면 경고를 출력하고, **자동
+설치가 가능한 도구는 설치 여부를 물어본 뒤 설치**합니다. 도구는 `PATH`뿐 아니라
+`go install` 설치 위치(`$(go env GOPATH)/bin`)에서도 자동으로 찾으므로, 아래처럼
+설치만 해두면 별도 `PATH` 설정 없이 바로 사용됩니다.
+
+| 도구         | 설치 방식        | `recon` 자동 설치 |
+| ------------ | ---------------- | ----------------- |
+| `nmap`       | apt              | 지원 (`y` 입력)   |
+| `nuclei`     | `go install`     | 지원 (`y` 입력)   |
+| `msfconsole` | 공식 설치 스크립트 | 미지원 (수동)     |
+
+### nmap
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y nmap
-# nuclei:      https://github.com/projectdiscovery/nuclei
-# metasploit:  sudo apt-get install -y metasploit-framework
+sudo apt-get update && sudo apt-get install -y nmap
+nmap --version   # 설치 확인
 ```
+
+`recon` 실행 중 프롬프트에서 `y`를 입력해도 동일하게 설치됩니다.
+
+### nuclei
+
+```bash
+go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+nuclei -version   # 설치 확인
+```
+
+`go install`은 바이너리를 `$(go env GOPATH)/bin`(기본 `~/go/bin`)에 설치합니다.
+`recon`은 이 위치를 자동으로 탐색하므로 `PATH`에 추가하지 않아도 됩니다. 터미널에서
+`nuclei`를 직접 실행하고 싶다면 다음을 셸 설정에 추가하세요.
+
+```bash
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+### metasploit (msfconsole)
+
+Metasploit은 루비 런타임·DB 등을 포함해 설치가 무겁고 복잡하여 `recon`이 자동
+설치하지 않습니다. 아래 방법 중 하나로 직접 설치하세요.
+
+**방법 A — 공식 설치 스크립트 (Ubuntu/WSL 권장)**
+
+```bash
+curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > /tmp/msfinstall
+chmod 755 /tmp/msfinstall
+sudo /tmp/msfinstall
+```
+
+설치되면 `/opt/metasploit-framework/bin`이 `PATH`에 등록되어 `msfconsole`을 바로
+사용할 수 있습니다.
+
+**방법 B — 배포판 패키지 (Kali/Debian 계열)**
+
+```bash
+sudo apt-get install -y metasploit-framework
+```
+
+> 순정 Ubuntu 저장소에는 이 패키지가 없을 수 있습니다. 그때는 방법 A를 사용하세요.
+
+**첫 실행 및 DB 초기화**
+
+처음 `msfconsole`을 실행하면 데이터베이스 설정 여부를 묻습니다. 권장 설정으로
+진행하려면 `yes`를 입력하거나, 다음 명령으로 미리 초기화할 수 있습니다.
+
+```bash
+msfdb init        # PostgreSQL 기반 데이터베이스 초기화
+msfconsole -q -x "version; exit"   # 설치/버전 확인
+```
+
+> `recon`이 사용하는 auxiliary 스캐너 모듈은 DB 없이도 동작하지만, DB를 초기화해
+> 두면 결과 저장·연동에 유리합니다.
+
+**recon 연동**
+
+`recon`은 `msfconsole`을 다음과 같이 호출합니다.
+
+```bash
+msfconsole -q -x "use auxiliary/scanner/http/http_version; set RHOSTS <대상>; run; exit"
+```
+
+Metasploit 첫 로딩은 수십 초가 걸릴 수 있으므로, `-msf`/`-full` 실행 시
+`-timeout` 값을 넉넉히(예: `-timeout 10m`) 주는 것을 권장합니다.
 
 ## 빌드 및 실행
 
