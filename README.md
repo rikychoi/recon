@@ -105,18 +105,17 @@ sudo apt-get install -y metasploit-framework
 
 > 순정 Ubuntu 저장소에는 이 패키지가 없을 수 있습니다. 그때는 방법 A를 사용하세요.
 
-**첫 실행 및 DB 초기화**
-
-처음 `msfconsole`을 실행하면 데이터베이스 설정 여부를 묻습니다. 권장 설정으로
-진행하려면 `yes`를 입력하거나, 다음 명령으로 미리 초기화할 수 있습니다.
+**첫 실행 및 설치 확인**
 
 ```bash
-msfdb init        # PostgreSQL 기반 데이터베이스 초기화
 msfconsole -q -x "version; exit"   # 설치/버전 확인
 ```
 
-> `recon`이 사용하는 auxiliary 스캐너 모듈은 DB 없이도 동작하지만, DB를 초기화해
-> 두면 결과 저장·연동에 유리합니다.
+처음 `msfconsole`을 실행하면 데이터베이스(msfdb) 설정 여부를 묻는데, 이는
+**Metasploit 자체의 선택 기능**입니다. `recon`은 어떤 데이터베이스도 사용하지
+않으며, `recon`이 호출하는 auxiliary 스캐너 모듈은 **DB 없이 정상 동작**합니다.
+따라서 프롬프트에서 그냥 `no`를 입력해도 무방합니다. (Metasploit에서 스캔 이력을
+직접 저장·관리하고 싶을 때만 `msfdb init`으로 초기화하면 됩니다.)
 
 **recon 연동**
 
