@@ -33,3 +33,13 @@ func TestInstallToolUnsupported(t *testing.T) {
 		t.Fatalf("msfconsole 자동 설치는 지원되지 않아야 하는데 오류가 없다")
 	}
 }
+
+// TestToolPath는 PATH에 있는 도구의 전체 경로를 반환하고, 없는 도구는 빈 문자열을 반환하는지 검증한다.
+func TestToolPath(t *testing.T) {
+	if p := ToolPath("go"); p == "" {
+		t.Fatalf("go 실행 파일의 경로를 찾지 못했다")
+	}
+	if p := ToolPath("definitely-not-a-real-binary-xyz"); p != "" {
+		t.Fatalf("존재하지 않는 도구인데 경로 %q 를 반환했다", p)
+	}
+}

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // installMethod는 도구를 자동 설치하는 방식을 정의한다.
@@ -28,10 +30,47 @@ func aptAvailable() bool {
 	return runtime.GOOS == "linux" && ToolAvailable("apt-get")
 }
 
-// ToolAvailable은 지정한 실행 파일이 PATH에 존재하는지 확인한다.
+// ToolPath는 실행 파일의 전체 경로를 해석하여 반환한다.
+// 우선 PATH에서 찾고, 없으면 Go 설치 위치(GOBIN, GOPATH/bin)까지 확인한다.
+// `go install`로 설치한 도구는 PATH에 없어도 여기서 찾을 수 있도록 한다.
+// 찾지 못하면 빈 문자열을 반환한다.
+func ToolPath(binary string) string {
+	if p, err := exec.LookPath(binary); err == nil {
+		return p
+	}
+	for _, dir := range goBinDirs() {
+		candidate := filepath.Join(dir, binary)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// goBinDirs는 Go가 바이너리를 설치하는 디렉터리 후보(GOBIN, GOPATH/bin)를 반환한다.
+func goBinDirs() []string {
+	var dirs []string
+	if gobin := goEnv("GOBIN"); gobin != "" {
+		dirs = append(dirs, gobin)
+	}
+	if gopath := goEnv("GOPATH"); gopath != "" {
+		dirs = append(dirs, filepath.Join(gopath, "bin"))
+	}
+	return dirs
+}
+
+// goEnv는 `go env <key>` 값을 조회한다. go가 없거나 실패하면 빈 문자열을 반환한다.
+func goEnv(key string) string {
+	out, err := exec.Command("go", "env", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ToolAvailable은 지정한 실행 파일을 PATH 또는 Go 설치 위치에서 찾을 수 있는지 확인한다.
 func ToolAvailable(binary string) bool {
-	_, err := exec.LookPath(binary)
-	return err == nil
+	return ToolPath(binary) != ""
 }
 
 // CanAutoInstall은 해당 도구를 이 환경에서 자동 설치할 수 있는지 반환한다.
@@ -86,7 +125,7 @@ func InstallTool(ctx context.Context, tool string) error {
 	}
 
 	if !ToolAvailable(tool) {
-		return fmt.Errorf("%s 설치를 마쳤으나 PATH에서 찾을 수 없습니다(go install의 경우 $(go env GOPATH)/bin 을 PATH에 추가하세요)", tool)
+		return fmt.Errorf("%s 설치를 마쳤으나 실행 파일을 찾을 수 없습니다", tool)
 	}
 	return nil
 }

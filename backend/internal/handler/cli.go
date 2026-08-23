@@ -82,12 +82,13 @@ func buildOrchestrator(opts Options) *service.Orchestrator {
 	useNuclei := opts.Nuclei || opts.Full
 	useMSF := opts.MSF || opts.Full
 
+	// PATH에 없어도 go install 위치(GOPATH/bin) 등에서 실행 파일을 찾아 전체 경로로 실행한다.
 	var scanners []service.VulnerabilityScanner
 	if useNuclei {
-		scanners = append(scanners, service.NewNucleiScanner(""))
+		scanners = append(scanners, service.NewNucleiScanner(service.ToolPath("nuclei")))
 	}
 	if useMSF {
-		scanners = append(scanners, service.NewMetasploitScanner(""))
+		scanners = append(scanners, service.NewMetasploitScanner(service.ToolPath("msfconsole")))
 	}
 
 	// 취약점 스캐너가 하나 이상이면 MultiScanner로 묶어 순차 적용한다.
@@ -98,7 +99,7 @@ func buildOrchestrator(opts Options) *service.Orchestrator {
 
 	var portScanner service.PortScanner
 	if useNmap {
-		portScanner = service.NewNmapScanner("")
+		portScanner = service.NewNmapScanner(service.ToolPath("nmap"))
 	}
 
 	return service.NewOrchestratorWithPortScan(
