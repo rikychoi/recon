@@ -2,10 +2,13 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rikychoi/recon/internal/model"
@@ -50,10 +53,13 @@ func Run(args []string) int {
 		return 2
 	}
 
-	orch := buildOrchestrator(opts)
-
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()
+
+	// 활성화된 외부 도구가 설치되어 있는지 점검하고, 없으면 설치를 안내/시도한다.
+	ensureTools(ctx, opts, os.Stdin, os.Stderr)
+
+	orch := buildOrchestrator(opts)
 
 	// 자산 식별 → 취약점 점검으로 이어지는 전체 흐름을 한 번의 호출로 실행한다.
 	result, err := orch.Run(ctx, opts.Domain)
@@ -101,4 +107,64 @@ func buildOrchestrator(opts Options) *service.Orchestrator {
 		portScanner,
 		vulnScanner,
 	)
+}
+
+// requiredTool은 활성화된 옵션과 그에 필요한 외부 도구(실행 파일)를 짝지은 것이다.
+type requiredTool struct {
+	enabled bool
+	binary  string
+}
+
+// ensureTools는 활성화된 단계에 필요한 외부 도구의 설치 여부를 확인한다.
+// 설치되어 있지 않으면 경고를 출력하고, 자동 설치가 가능한 도구는 사용자에게 물어본 뒤 설치한다.
+// out은 안내/프롬프트 출력 대상, in은 사용자 응답 입력 대상이다(테스트 주입용).
+func ensureTools(ctx context.Context, opts Options, in io.Reader, out io.Writer) {
+	tools := []requiredTool{
+		{opts.Nmap || opts.Full, "nmap"},
+		{opts.Nuclei || opts.Full, "nuclei"},
+		{opts.MSF || opts.Full, "msfconsole"},
+	}
+
+	for _, t := range tools {
+		if !t.enabled || service.ToolAvailable(t.binary) {
+			continue // 사용하지 않거나 이미 설치된 도구는 건너뛴다.
+		}
+
+		fmt.Fprintf(out, "경고: %s 가 설치되어 있지 않아 해당 단계를 건너뜁니다.\n", t.binary)
+
+		// 자동 설치가 가능하고 대화형 입력이 가능하면 설치 여부를 물어본다.
+		if service.CanAutoInstall(t.binary) && isInteractive() {
+			if promptYesNo(in, out, fmt.Sprintf("%s 를 지금 설치할까요? [y/N]: ", t.binary)) {
+				if err := service.InstallTool(ctx, t.binary); err != nil {
+					fmt.Fprintf(out, "설치 실패: %v\n", err)
+				} else {
+					fmt.Fprintf(out, "%s 설치 완료.\n", t.binary)
+				}
+				continue
+			}
+		}
+		// 설치하지 않았거나 자동 설치가 불가능한 경우 수동 설치 방법을 안내한다.
+		fmt.Fprintf(out, "설치 방법: %s\n", service.InstallHint(t.binary))
+	}
+}
+
+// isInteractive는 표준 입력이 터미널(문자 장치)인지 확인한다.
+// 파이프/리다이렉트 등 비대화형 실행에서는 설치 프롬프트로 멈추지 않도록 한다.
+func isInteractive() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// promptYesNo는 사용자에게 예/아니오를 물어 y 또는 yes 응답일 때만 true를 반환한다.
+func promptYesNo(in io.Reader, out io.Writer, question string) bool {
+	fmt.Fprint(out, question)
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
 }
