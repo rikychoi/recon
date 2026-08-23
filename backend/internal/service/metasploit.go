@@ -60,6 +60,9 @@ func (m *MetasploitScanner) Scan(ctx context.Context, targets []string) ([]model
 	for _, mod := range m.modules {
 		script := buildResourceScript(mod.Name, rhosts)
 		cmd := exec.CommandContext(ctx, m.binary, "-q", "-x", script)
+		// msfconsole이 부모 터미널을 raw 모드로 바꿔 입력이 먹통이 되는 것을 막기 위해
+		// 자식 프로세스를 제어 터미널에서 분리한다.
+		cmd.SysProcAttr = detachedProcAttr()
 		out, err := cmd.Output()
 		if err != nil {
 			continue // 개별 모듈 실행 실패는 건너뛰고 다음 모듈을 진행한다.
