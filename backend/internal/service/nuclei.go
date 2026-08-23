@@ -14,8 +14,9 @@ import (
 // NucleiScanner는 Nuclei CLI를 실행하여 취약점을 점검하는 VulnerabilityScanner 구현이다.
 // binary를 "docker"로 지정하고 extra에 실행 인자를 넘기면 Docker 컨테이너로도 실행할 수 있다.
 type NucleiScanner struct {
-	binary string   // 실행할 바이너리 경로 (기본 "nuclei")
-	extra  []string // 추가 CLI 인자 (템플릿 경로, 레이트 제한 등)
+	binary   string    // 실행할 바이너리 경로 (기본 "nuclei")
+	extra    []string  // 추가 CLI 인자 (템플릿 경로, 레이트 제한 등)
+	progress io.Writer // 진행 상황 출력 대상(nil이면 미출력)
 }
 
 // NewNucleiScanner는 NucleiScanner를 생성한다. binary가 비면 "nuclei"를 사용한다.
@@ -24,6 +25,11 @@ func NewNucleiScanner(binary string, extra ...string) *NucleiScanner {
 		binary = "nuclei"
 	}
 	return &NucleiScanner{binary: binary, extra: extra}
+}
+
+// SetProgress는 진행 상황을 출력할 Writer를 지정한다(nil이면 미출력).
+func (n *NucleiScanner) SetProgress(w io.Writer) {
+	n.progress = w
 }
 
 // nucleiResult는 nuclei의 -jsonl 출력 중 필요한 필드만 담는 구조체이다.
@@ -51,6 +57,7 @@ func (n *NucleiScanner) Scan(ctx context.Context, targets []string) ([]model.Vul
 	}
 	args = append(args, n.extra...)
 
+	progressf(n.progress, "    - nuclei 실행 (대상 %d개, 템플릿 스캔 중)...\n", len(targets))
 	cmd := exec.CommandContext(ctx, n.binary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

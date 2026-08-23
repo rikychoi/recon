@@ -59,7 +59,8 @@ func Run(args []string) int {
 	// 활성화된 외부 도구가 설치되어 있는지 점검하고, 없으면 설치를 안내/시도한다.
 	ensureTools(ctx, opts, os.Stdin, os.Stderr)
 
-	orch := buildOrchestrator(opts)
+	// 진행 상황은 결과(stdout)와 분리하여 stderr로 실시간 출력한다.
+	orch := buildOrchestrator(opts, os.Stderr)
 
 	// 자산 식별 → 취약점 점검으로 이어지는 전체 흐름을 한 번의 호출로 실행한다.
 	result, err := orch.Run(ctx, opts.Domain)
@@ -77,7 +78,8 @@ func Run(args []string) int {
 
 // buildOrchestrator는 옵션에 따라 자산 식별 스캐너와 취약점 스캐너를 조립한다.
 // -full은 사용 가능한 모든 취약점 스캐너(nuclei + metasploit)를 활성화한다.
-func buildOrchestrator(opts Options) *service.Orchestrator {
+// progress는 진행 상황 출력 대상이다(보통 os.Stderr). 각 스캐너와 오케스트레이터에 주입한다.
+func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 	useNmap := opts.Nmap || opts.Full
 	useNuclei := opts.Nuclei || opts.Full
 	useMSF := opts.MSF || opts.Full
@@ -85,10 +87,14 @@ func buildOrchestrator(opts Options) *service.Orchestrator {
 	// PATH에 없어도 go install 위치(GOPATH/bin) 등에서 실행 파일을 찾아 전체 경로로 실행한다.
 	var scanners []service.VulnerabilityScanner
 	if useNuclei {
-		scanners = append(scanners, service.NewNucleiScanner(service.ToolPath("nuclei")))
+		s := service.NewNucleiScanner(service.ToolPath("nuclei"))
+		s.SetProgress(progress)
+		scanners = append(scanners, s)
 	}
 	if useMSF {
-		scanners = append(scanners, service.NewMetasploitScanner(service.ToolPath("msfconsole")))
+		s := service.NewMetasploitScanner(service.ToolPath("msfconsole"))
+		s.SetProgress(progress)
+		scanners = append(scanners, s)
 	}
 
 	// 취약점 스캐너가 하나 이상이면 MultiScanner로 묶어 순차 적용한다.
@@ -99,15 +105,19 @@ func buildOrchestrator(opts Options) *service.Orchestrator {
 
 	var portScanner service.PortScanner
 	if useNmap {
-		portScanner = service.NewNmapScanner(service.ToolPath("nmap"))
+		ns := service.NewNmapScanner(service.ToolPath("nmap"))
+		ns.SetProgress(progress)
+		portScanner = ns
 	}
 
-	return service.NewOrchestratorWithPortScan(
+	orch := service.NewOrchestratorWithPortScan(
 		service.NewNetDNSResolver(),
 		service.NewBruteSubdomainScanner(nil, 20),
 		portScanner,
 		vulnScanner,
 	)
+	orch.SetProgress(progress)
+	return orch
 }
 
 // requiredTool은 활성화된 옵션과 그에 필요한 외부 도구(실행 파일)를 짝지은 것이다.

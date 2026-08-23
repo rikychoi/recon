@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/xml"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -11,7 +12,8 @@ import (
 
 // NmapScanner는 nmap CLI를 실행하여 대상의 열린 포트를 식별하는 PortScanner 구현이다.
 type NmapScanner struct {
-	binary string // 실행할 바이너리 경로 (기본 "nmap")
+	binary   string    // 실행할 바이너리 경로 (기본 "nmap")
+	progress io.Writer // 진행 상황 출력 대상(nil이면 미출력)
 }
 
 // NewNmapScanner는 NmapScanner를 생성한다.
@@ -22,9 +24,14 @@ func NewNmapScanner(binary string) *NmapScanner {
 	return &NmapScanner{binary: binary}
 }
 
+// SetProgress는 대상별 진행 상황을 출력할 Writer를 지정한다(nil이면 미출력).
+func (n *NmapScanner) SetProgress(w io.Writer) {
+	n.progress = w
+}
+
 type nmapRun struct {
-	XMLName xml.Name     `xml:"nmaprun"`
-	Hosts   []nmapHost   `xml:"host"`
+	XMLName xml.Name   `xml:"nmaprun"`
+	Hosts   []nmapHost `xml:"host"`
 }
 
 type nmapHost struct {
@@ -38,10 +45,10 @@ type nmapAddress struct {
 }
 
 type nmapPort struct {
-	PortID   int          `xml:"portid,attr"`
-	Protocol string       `xml:"protocol,attr"`
-	State    nmapState    `xml:"state"`
-	Service  nmapService  `xml:"service"`
+	PortID   int         `xml:"portid,attr"`
+	Protocol string      `xml:"protocol,attr"`
+	State    nmapState   `xml:"state"`
+	Service  nmapService `xml:"service"`
 }
 
 type nmapState struct {
@@ -60,7 +67,8 @@ func (n *NmapScanner) Scan(ctx context.Context, targets []string) ([]model.Port,
 	}
 
 	var ports []model.Port
-	for _, target := range targets {
+	for i, target := range targets {
+		progressf(n.progress, "    - [%d/%d] nmap %s ...\n", i+1, len(targets), target)
 		cmd := exec.CommandContext(ctx, n.binary, "-Pn", "-sV", "-oX", "-", target)
 		out, err := cmd.Output()
 		if err != nil {

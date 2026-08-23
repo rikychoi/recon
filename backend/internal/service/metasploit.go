@@ -28,8 +28,14 @@ var DefaultMSFModules = []MSFModule{
 // MetasploitScanner는 msfconsole을 실행하여 취약점을 점검하는 VulnerabilityScanner 구현이다.
 // 각 모듈을 개별 msfconsole 세션으로 실행하여 결과 귀속을 단순화한다.
 type MetasploitScanner struct {
-	binary  string      // msfconsole 경로 (기본 "msfconsole")
-	modules []MSFModule // 실행할 모듈 목록
+	binary   string      // msfconsole 경로 (기본 "msfconsole")
+	modules  []MSFModule // 실행할 모듈 목록
+	progress io.Writer   // 진행 상황 출력 대상(nil이면 미출력)
+}
+
+// SetProgress는 모듈별 진행 상황을 출력할 Writer를 지정한다(nil이면 미출력).
+func (m *MetasploitScanner) SetProgress(w io.Writer) {
+	m.progress = w
 }
 
 // NewMetasploitScanner는 MetasploitScanner를 생성한다.
@@ -57,7 +63,8 @@ func (m *MetasploitScanner) Scan(ctx context.Context, targets []string) ([]model
 
 	rhosts := strings.Join(targets, " ")
 	var vulns []model.Vulnerability
-	for _, mod := range m.modules {
+	for i, mod := range m.modules {
+		progressf(m.progress, "    - [%d/%d] msf %s ...\n", i+1, len(m.modules), mod.Name)
 		script := buildResourceScript(mod.Name, rhosts)
 		cmd := exec.CommandContext(ctx, m.binary, "-q", "-x", script)
 		// msfconsole이 부모 터미널을 raw 모드로 바꿔 입력이 먹통이 되는 것을 막기 위해
