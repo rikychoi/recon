@@ -19,7 +19,7 @@ func NewMultiScanner(scanners ...VulnerabilityScanner) *MultiScanner {
 
 // Scan은 구성된 모든 스캐너를 실행하고 각 결과를 합쳐 반환한다.
 // 개별 스캐너의 오류는 전체를 중단시키지 않고 건너뛴다.
-func (m *MultiScanner) Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error) {
+func (m *MultiScanner) Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error) {
 	var all []model.Vulnerability
 	for _, s := range m.scanners {
 		if s == nil {

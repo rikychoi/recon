@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"io"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,14 @@ type Orchestrator struct {
 	progress         io.Writer            // 진행 상황 출력 대상(nil이면 미출력)
 	progressMu       sync.Mutex           // 병렬 구간에서 진행 로그 출력을 직렬화한다.
 	assetConcurrency int                  // 자산별 파이프라인 동시 실행 상한
+	allowPublic      bool                 // 공인(외부) IP 대상 스캔 허용 여부(기본 false=차단)
+}
+
+// SetAllowPublic은 공인(외부) IP 대상에 대한 포트스캔·취약점점검 허용 여부를 지정한다.
+// 기본은 false로, 사설/로컬 IP가 아닌 대상은 경고 후 스캔에서 제외한다.
+// 이는 오타·DNS 하이재킹 등으로 의도치 않은 외부 서버를 공격하는 사고를 예방한다.
+func (o *Orchestrator) SetAllowPublic(allow bool) {
+	o.allowPublic = allow
 }
 
 // SetProgress는 진행 상황을 출력할 Writer를 지정한다(보통 os.Stderr).
@@ -112,6 +121,10 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 	rootIPs := extractHostIPs(result.Asset.DNSRecords)
 	assets := buildAssets(domain, rootIPs, result.Asset.Subdomains)
 
+	// 3-1) 공인(외부) IP 자산은 안전을 위해 기본 차단한다.
+	//      오타·DNS 하이재킹 등으로 의도치 않은 외부 서버를 스캔/공격하는 사고를 막는다.
+	assets = o.guardPublicAssets(assets)
+
 	if o.port == nil && o.vuln == nil {
 		// 포트 스캔·취약점 점검이 모두 비활성이면 자산 식별 결과만 반환한다.
 		result.FinishedAt = time.Now()
@@ -190,14 +203,59 @@ func (o *Orchestrator) scanOne(ctx context.Context, a *scanAsset) ([]model.Port,
 
 	var vulns []model.Vulnerability
 	if o.vuln != nil {
-		o.logf("    - [취약점] %s 점검...\n", a.key)
-		if v, err := o.vuln.Scan(ctx, []string{a.key}); err == nil {
+		// 포트스캔에서 찾은 열린 포트(서비스 포함)를 그대로 넘긴다.
+		// 이를 통해 metasploit은 적합한 서비스 포트에만 모듈을 실행하고, nuclei는 해당 포트를 점검한다.
+		vtargets := ports
+		if len(vtargets) == 0 {
+			// 열린 포트가 없으면 호스트만(Number 0) 넘겨 스캐너가 기본 포트로 점검하게 한다.
+			vtargets = []model.Port{{Target: a.key}}
+		}
+		o.logf("    - [취약점] %s (열린 포트 %d개) 점검...\n", a.key, len(ports))
+		if v, err := o.vuln.Scan(ctx, vtargets); err == nil {
 			vulns = v
 		} else {
 			o.logf("    - [취약점] %s 실패: %v\n", a.key, err)
 		}
 	}
 	return ports, vulns
+}
+
+// guardPublicAssets는 자산 목록에서 공인(외부) IP 대상을 걸러낸다.
+// allowPublic이 false(기본)이면 공인 IP 자산에 경고를 출력하고 스캔 대상에서 제외한다.
+// allowPublic이 true이면 경고만 출력하고 그대로 통과시킨다.
+func (o *Orchestrator) guardPublicAssets(assets []*scanAsset) []*scanAsset {
+	kept := make([]*scanAsset, 0, len(assets))
+	for _, a := range assets {
+		ip := net.ParseIP(a.key)
+		if ip == nil || !isPublicIP(ip) {
+			kept = append(kept, a) // 사설/로컬 IP 또는 IP가 아닌 대상은 그대로 진행한다.
+			continue
+		}
+		if o.allowPublic {
+			progressf(o.progress, "[!] 경고: 공인 IP %s (%s) 대상 — -allow-public 지정으로 진행합니다.\n",
+				a.key, strings.Join(a.hostnames, ", "))
+			kept = append(kept, a)
+			continue
+		}
+		// 공인 IP인데 허용되지 않음 → 스캔에서 제외한다.
+		progressf(o.progress, "[!] 경고: 공인(외부) IP %s (%s) 는 스캔에서 제외했습니다. "+
+			"의도한 대상이면 -allow-public 을 지정하세요. (DNS 하이재킹/오타 여부를 먼저 확인)\n",
+			a.key, strings.Join(a.hostnames, ", "))
+	}
+	return kept
+}
+
+// isPublicIP는 인터넷 상의 공인 IP인지 판정한다.
+// 루프백·사설(RFC1918/RFC4193)·링크로컬·미지정 주소는 공인이 아니다.
+func isPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	return true
 }
 
 // extractHostIPs는 DNS 레코드에서 A/AAAA 레코드의 IP 값만 추출한다(루트 도메인의 IP).

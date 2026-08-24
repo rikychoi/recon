@@ -26,8 +26,10 @@ type PortScanner interface {
 	Scan(ctx context.Context, targets []string) ([]model.Port, error)
 }
 
-// VulnerabilityScanner는 대상 목록에 대해 취약점을 점검한다.
+// VulnerabilityScanner는 열린 포트(서비스 포함) 목록에 대해 취약점을 점검한다.
 type VulnerabilityScanner interface {
-	// Scan은 대상 목록에 대해 취약점을 점검하여 결과를 반환한다.
-	Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error)
+	// Scan은 열린 포트 목록(대상·포트·서비스)에 대해 취약점을 점검하여 결과를 반환한다.
+	// 포트 정보가 없는 대상은 Number 0인 Port로 전달하며, 스캐너는 기본 포트로 점검한다.
+	// 서비스 정보를 통해 각 점검 도구가 적합한 서비스(예: http)에만 실행할 수 있다.
+	Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error)
 }

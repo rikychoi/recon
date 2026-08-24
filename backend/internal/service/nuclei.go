@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
+	"strconv"
 
 	"github.com/rikychoi/recon/internal/model"
 )
@@ -45,15 +47,20 @@ type nucleiResult struct {
 	} `json:"info"`
 }
 
-// Scan은 대상 목록에 대해 nuclei를 실행하고 JSONL 출력을 파싱하여 취약점을 수집한다.
-func (n *NucleiScanner) Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error) {
+// Scan은 열린 포트 목록에 대해 nuclei를 실행하고 JSONL 출력을 파싱하여 취약점을 수집한다.
+// 각 포트를 host:port 대상으로 넘기며(Number 0이면 host만), nuclei가 http/https를 자동 판별한다.
+func (n *NucleiScanner) Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
 
 	args := []string{"-jsonl", "-silent"}
-	for _, t := range targets {
-		args = append(args, "-target", t)
+	for _, p := range targets {
+		target := p.Target
+		if p.Number > 0 {
+			target = net.JoinHostPort(p.Target, strconv.Itoa(p.Number))
+		}
+		args = append(args, "-target", target)
 	}
 	args = append(args, n.extra...)
 

@@ -13,7 +13,7 @@ type stubVuln struct {
 	err   error
 }
 
-func (s stubVuln) Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error) {
+func (s stubVuln) Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error) {
 	return s.vulns, s.err
 }
 
@@ -23,7 +23,7 @@ func TestMultiScannerMerges(t *testing.T) {
 	b := stubVuln{vulns: []model.Vulnerability{{ID: "b", Source: "metasploit"}, {ID: "c", Source: "metasploit"}}}
 
 	multi := NewMultiScanner(a, nil, b) // nil 스캐너는 건너뛰어야 한다.
-	vulns, err := multi.Scan(context.Background(), []string{"example.com"})
+	vulns, err := multi.Scan(context.Background(), []model.Port{{Target: "example.com"}})
 	if err != nil {
 		t.Fatalf("Scan 오류: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestMultiScannerToleratesError(t *testing.T) {
 	bad := stubVuln{err: context.DeadlineExceeded}
 
 	multi := NewMultiScanner(bad, good)
-	vulns, err := multi.Scan(context.Background(), []string{"example.com"})
+	vulns, err := multi.Scan(context.Background(), []model.Port{{Target: "example.com"}})
 	if err != nil {
 		t.Fatalf("Scan 오류: %v", err)
 	}

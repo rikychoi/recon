@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,17 +74,26 @@ type recordingVuln struct {
 	calls [][]string
 }
 
-func (r *recordingVuln) Scan(ctx context.Context, targets []string) ([]model.Vulnerability, error) {
+func (r *recordingVuln) Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error) {
+	// 대상 포트를 host 또는 host:port 문자열로 기록한다.
+	strs := make([]string, 0, len(targets))
+	for _, p := range targets {
+		s := p.Target
+		if p.Number > 0 {
+			s = net.JoinHostPort(p.Target, strconv.Itoa(p.Number))
+		}
+		strs = append(strs, s)
+	}
 	r.mu.Lock()
-	r.calls = append(r.calls, append([]string(nil), targets...))
+	r.calls = append(r.calls, strs)
 	r.mu.Unlock()
 
-	if len(targets) == 0 {
+	if len(strs) == 0 {
 		return nil, nil
 	}
 	return []model.Vulnerability{{
-		ID:       "v-" + targets[0],
-		Target:   targets[0],
+		ID:       "v-" + strs[0],
+		Target:   strs[0],
 		CVSS:     9.1,
 		Severity: "critical",
 		Source:   "fake",
@@ -106,6 +117,7 @@ func TestOrchestratorRun(t *testing.T) {
 	vuln := &recordingVuln{}
 
 	orch := NewOrchestratorWithPortScan(dns, subs, ports, vuln)
+	orch.SetAllowPublic(true) // 이 테스트는 공인 IP 가드가 아닌 취합/중복제거 로직을 검증한다
 	result, err := orch.Run(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("Run 오류: %v", err)
@@ -156,6 +168,7 @@ func TestOrchestratorDedupsSharedIP(t *testing.T) {
 	vuln := &recordingVuln{}
 
 	orch := NewOrchestratorWithPortScan(dns, subs, ports, vuln)
+	orch.SetAllowPublic(true) // 이 테스트는 공인 IP 가드가 아닌 IP 중복제거 로직을 검증한다
 	_, err := orch.Run(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("Run 오류: %v", err)
@@ -173,8 +186,9 @@ func TestOrchestratorDedupsSharedIP(t *testing.T) {
 	if len(vuln.calls) != 1 {
 		t.Fatalf("취약점 점검 호출 수 = %d, 기대값 1", len(vuln.calls))
 	}
-	if len(vuln.calls[0]) != 1 || vuln.calls[0][0] != "1.2.3.4" {
-		t.Errorf("취약점 점검 대상 = %v, 기대값 [1.2.3.4] (IP 단위)", vuln.calls[0])
+	// 열린 포트(80)가 host:port 엔드포인트로 연계되어 IP 단위로 한 번만 전달되어야 한다.
+	if len(vuln.calls[0]) != 1 || vuln.calls[0][0] != "1.2.3.4:80" {
+		t.Errorf("취약점 점검 대상 = %v, 기대값 [1.2.3.4:80] (열린 포트 연계, IP 단위)", vuln.calls[0])
 	}
 }
 
@@ -192,6 +206,7 @@ func TestOrchestratorRunsAssetsInParallel(t *testing.T) {
 
 	cp := &concurrentPorts{}
 	orch := NewOrchestratorWithPortScan(dns, subs, cp, nil)
+	orch.SetAllowPublic(true) // 이 테스트는 공인 IP 가드가 아닌 병렬 실행을 검증한다
 	if _, err := orch.Run(context.Background(), "example.com"); err != nil {
 		t.Fatalf("Run 오류: %v", err)
 	}
@@ -218,6 +233,68 @@ func (c *concurrentPorts) Scan(ctx context.Context, targets []string) ([]model.P
 	time.Sleep(30 * time.Millisecond) // 동시 실행 창을 확보하기 위한 짧은 지연
 	atomic.AddInt32(&c.active, -1)
 	return nil, nil
+}
+
+// TestIsPublicIP는 공인/사설/로컬 IP 판정을 검증한다.
+func TestIsPublicIP(t *testing.T) {
+	cases := []struct {
+		ip     string
+		public bool
+	}{
+		{"8.8.8.8", true},
+		{"218.38.137.27", true}, // 예: ISP 하이재킹 응답 IP
+		{"1.1.1.1", true},
+		{"192.168.0.10", false},        // 사설
+		{"10.1.2.3", false},            // 사설
+		{"172.16.5.5", false},          // 사설
+		{"127.0.0.1", false},           // 루프백
+		{"169.254.1.1", false},         // 링크로컬
+		{"::1", false},                 // IPv6 루프백
+		{"fd00::1", false},             // IPv6 유니크 로컬(사설)
+		{"2001:4860:4860::8888", true}, // IPv6 공인
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip)
+		if got := isPublicIP(ip); got != c.public {
+			t.Errorf("isPublicIP(%s) = %v, want %v", c.ip, got, c.public)
+		}
+	}
+}
+
+// TestOrchestratorBlocksPublicIP는 기본 설정에서 공인 IP 자산이 스캔에서 제외되고,
+// -allow-public(SetAllowPublic) 시에는 스캔되는지 검증한다.
+func TestOrchestratorBlocksPublicIP(t *testing.T) {
+	dns := fakeDNS{records: []model.DNSRecord{
+		{Type: "A", Name: "app.test.local", Value: "8.8.8.8"}, // 공인 IP(예: 하이재킹)
+	}}
+	subs := fakeSubs{subs: []model.Subdomain{
+		{Name: "vm.test.local", IPs: []string{"192.168.10.20"}}, // 사설 IP
+	}}
+
+	// 기본(차단): 공인 IP는 스캔되지 않고 사설 IP만 스캔되어야 한다.
+	ports := &recordingPorts{}
+	orch := NewOrchestratorWithPortScan(dns, subs, ports, nil)
+	if _, err := orch.Run(context.Background(), "app.test.local"); err != nil {
+		t.Fatalf("Run 오류: %v", err)
+	}
+	keys := ports.scannedKeys()
+	if _, scanned := keys["8.8.8.8"]; scanned {
+		t.Errorf("공인 IP가 차단되지 않고 스캔됨: %v", keys)
+	}
+	if keys["192.168.10.20"] != 1 {
+		t.Errorf("사설 IP는 스캔되어야 함: %v", keys)
+	}
+
+	// 허용: -allow-public 지정 시 공인 IP도 스캔되어야 한다.
+	ports2 := &recordingPorts{}
+	orch2 := NewOrchestratorWithPortScan(dns, subs, ports2, nil)
+	orch2.SetAllowPublic(true)
+	if _, err := orch2.Run(context.Background(), "app.test.local"); err != nil {
+		t.Fatalf("Run 오류: %v", err)
+	}
+	if ports2.scannedKeys()["8.8.8.8"] != 1 {
+		t.Errorf("-allow-public 인데 공인 IP가 스캔되지 않음: %v", ports2.scannedKeys())
+	}
 }
 
 // TestOrchestratorSkipsNilScanners는 nil 스캐너 단계를 건너뛰고도 정상 동작하는지 검증한다.

@@ -17,14 +17,15 @@ import (
 
 // Options는 CLI 실행 옵션을 담는다.
 type Options struct {
-	Domain   string        // 점검 대상 도메인
-	Format   string        // 출력 형식 (text|json)
-	Timeout  time.Duration // 전체 점검 제한 시간
-	Nmap     bool          // nmap 포트 스캔 활성화(외부 nmap 사용)
-	Portscan bool          // 내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)
-	Nuclei   bool          // nuclei 취약점 점검 활성화
-	MSF      bool          // metasploit 취약점 점검 활성화
-	Full     bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
+	Domain      string        // 점검 대상 도메인
+	Format      string        // 출력 형식 (text|json)
+	Timeout     time.Duration // 전체 점검 제한 시간
+	Nmap        bool          // nmap 포트 스캔 활성화(외부 nmap 사용)
+	Portscan    bool          // 내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)
+	Nuclei      bool          // nuclei 취약점 점검 활성화
+	MSF         bool          // metasploit 취약점 점검 활성화
+	Full        bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
+	AllowPublic bool          // 공인(외부) IP 대상 스캔 허용(기본 false=차단)
 }
 
 // Run은 명령행 인자를 파싱하여 점검을 실행하고 결과를 출력한다.
@@ -40,6 +41,7 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.Nuclei, "nuclei", false, "nuclei 취약점 점검 활성화")
 	fs.BoolVar(&opts.MSF, "msf", false, "metasploit 취약점 점검 활성화")
 	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (내장 포트 스캔 + nuclei + metasploit)")
+	fs.BoolVar(&opts.AllowPublic, "allow-public", false, "공인(외부) IP 대상 스캔 허용 (기본: 사설/로컬 IP만 스캔, 공인 IP는 경고 후 제외)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -126,6 +128,7 @@ func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 		vulnScanner,
 	)
 	orch.SetProgress(progress)
+	orch.SetAllowPublic(opts.AllowPublic)
 	return orch
 }
 
