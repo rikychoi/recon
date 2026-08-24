@@ -28,8 +28,8 @@ func TestProgressfWritesFormatted(t *testing.T) {
 func TestOrchestratorProgress(t *testing.T) {
 	dns := fakeDNS{records: []model.DNSRecord{{Type: "A", Name: "x", Value: "1.1.1.1"}}}
 	subs := fakeSubs{subs: []model.Subdomain{{Name: "www.x"}}}
-	ports := fakePorts{ports: []model.Port{{Number: 80}}}
-	vuln := &fakeVuln{vulns: []model.Vulnerability{{ID: "CVE-1"}}}
+	ports := &recordingPorts{}
+	vuln := &recordingVuln{}
 
 	orch := NewOrchestratorWithPortScan(dns, subs, ports, vuln)
 	var buf bytes.Buffer
@@ -41,7 +41,7 @@ func TestOrchestratorProgress(t *testing.T) {
 
 	out := buf.String()
 	// 시작/완료 및 각 단계 로그가 포함되어야 한다.
-	for _, want := range []string{"점검 시작", "DNS", "서브도메인", "포트 스캔", "취약점", "점검 완료"} {
+	for _, want := range []string{"점검 시작", "DNS", "서브도메인", "[포트]", "[취약점]", "점검 완료"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("진행 로그에 %q 가 없다:\n%s", want, out)
 		}
@@ -50,7 +50,7 @@ func TestOrchestratorProgress(t *testing.T) {
 
 // TestOrchestratorProgressDisabled는 SetProgress 미지정 시 진행 로그가 출력되지 않는지 검증한다.
 func TestOrchestratorProgressDisabled(t *testing.T) {
-	orch := NewOrchestrator(fakeDNS{}, fakeSubs{}, &fakeVuln{})
+	orch := NewOrchestrator(fakeDNS{}, fakeSubs{}, &recordingVuln{})
 	// progress 미지정 상태에서 실행해도 패닉 없이 정상 동작해야 한다.
 	if _, err := orch.Run(context.Background(), "x"); err != nil {
 		t.Fatalf("Run 실패: %v", err)

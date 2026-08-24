@@ -17,13 +17,14 @@ import (
 
 // Options는 CLI 실행 옵션을 담는다.
 type Options struct {
-	Domain  string        // 점검 대상 도메인
-	Format  string        // 출력 형식 (text|json)
-	Timeout time.Duration // 전체 점검 제한 시간
-	Nmap    bool          // nmap 포트 스캔 활성화
-	Nuclei  bool          // nuclei 취약점 점검 활성화
-	MSF     bool          // metasploit 취약점 점검 활성화
-	Full    bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
+	Domain   string        // 점검 대상 도메인
+	Format   string        // 출력 형식 (text|json)
+	Timeout  time.Duration // 전체 점검 제한 시간
+	Nmap     bool          // nmap 포트 스캔 활성화(외부 nmap 사용)
+	Portscan bool          // 내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)
+	Nuclei   bool          // nuclei 취약점 점검 활성화
+	MSF      bool          // metasploit 취약점 점검 활성화
+	Full     bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
 }
 
 // Run은 명령행 인자를 파싱하여 점검을 실행하고 결과를 출력한다.
@@ -34,10 +35,11 @@ func Run(args []string) int {
 	fs.StringVar(&opts.Domain, "domain", "", "점검 대상 도메인 (필수)")
 	fs.StringVar(&opts.Format, "format", "text", "출력 형식 (text|json)")
 	fs.DurationVar(&opts.Timeout, "timeout", 5*time.Minute, "전체 점검 제한 시간")
-	fs.BoolVar(&opts.Nmap, "nmap", false, "nmap 포트 스캔 활성화")
+	fs.BoolVar(&opts.Nmap, "nmap", false, "nmap 포트 스캔 활성화(외부 nmap 사용)")
+	fs.BoolVar(&opts.Portscan, "portscan", false, "내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)")
 	fs.BoolVar(&opts.Nuclei, "nuclei", false, "nuclei 취약점 점검 활성화")
 	fs.BoolVar(&opts.MSF, "msf", false, "metasploit 취약점 점검 활성화")
-	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (nmap + nuclei + metasploit)")
+	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (내장 포트 스캔 + nuclei + metasploit)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -80,7 +82,7 @@ func Run(args []string) int {
 // -full은 사용 가능한 모든 취약점 스캐너(nuclei + metasploit)를 활성화한다.
 // progress는 진행 상황 출력 대상이다(보통 os.Stderr). 각 스캐너와 오케스트레이터에 주입한다.
 func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
-	useNmap := opts.Nmap || opts.Full
+	useNmap := opts.Nmap // -full은 외부 도구가 필요 없는 내장 TCP 스캐너를 사용한다
 	useNuclei := opts.Nuclei || opts.Full
 	useMSF := opts.MSF || opts.Full
 
@@ -103,11 +105,18 @@ func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 		vulnScanner = service.NewMultiScanner(scanners...)
 	}
 
+	// 포트 스캔 엔진 선택: -nmap이 지정되면 외부 nmap을,
+	// 그 외 -portscan/-full이면 외부 도구가 필요 없는 내장 고루틴 TCP 스캐너를 사용한다.
 	var portScanner service.PortScanner
-	if useNmap {
+	switch {
+	case useNmap:
 		ns := service.NewNmapScanner(service.ToolPath("nmap"))
 		ns.SetProgress(progress)
 		portScanner = ns
+	case opts.Portscan || opts.Full:
+		ts := service.NewTCPPortScanner(nil, 100)
+		ts.SetProgress(progress)
+		portScanner = ts
 	}
 
 	orch := service.NewOrchestratorWithPortScan(
@@ -131,7 +140,7 @@ type requiredTool struct {
 // out은 안내/프롬프트 출력 대상, in은 사용자 응답 입력 대상이다(테스트 주입용).
 func ensureTools(ctx context.Context, opts Options, in io.Reader, out io.Writer) {
 	tools := []requiredTool{
-		{opts.Nmap || opts.Full, "nmap"},
+		{opts.Nmap, "nmap"},
 		{opts.Nuclei || opts.Full, "nuclei"},
 		{opts.MSF || opts.Full, "msfconsole"},
 	}
