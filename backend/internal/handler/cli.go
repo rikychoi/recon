@@ -26,6 +26,9 @@ type Options struct {
 	MSF         bool          // metasploit 취약점 점검 활성화
 	Full        bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
 	AllowPublic bool          // 공인(외부) IP 대상 스캔 허용(기본 false=차단)
+	Enrich      bool          // 발견된 취약점에 CVE 보강(EPSS/KEV) 적용(기본 true)
+	NVD         bool          // CVSS가 비어 있는 취약점을 NVD로 보강(기본 false, 레이트 제한)
+	Takeover    bool          // 서브도메인 탈취(댕글링 CNAME) 탐지(기본 true)
 }
 
 // Run은 명령행 인자를 파싱하여 점검을 실행하고 결과를 출력한다.
@@ -42,6 +45,9 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.MSF, "msf", false, "metasploit 취약점 점검 활성화")
 	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (내장 포트 스캔 + nuclei + metasploit)")
 	fs.BoolVar(&opts.AllowPublic, "allow-public", false, "공인(외부) IP 대상 스캔 허용 (기본: 사설/로컬 IP만 스캔, 공인 IP는 경고 후 제외)")
+	fs.BoolVar(&opts.Enrich, "enrich", true, "발견된 취약점에 CVE 보강(EPSS 악용확률/CISA KEV) 적용 (외부 API 조회)")
+	fs.BoolVar(&opts.NVD, "nvd", false, "CVSS가 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성)")
+	fs.BoolVar(&opts.Takeover, "takeover", true, "서브도메인 탈취(댕글링 CNAME) 탐지 (DNS 조회만 수행)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -129,6 +135,20 @@ func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 	)
 	orch.SetProgress(progress)
 	orch.SetAllowPublic(opts.AllowPublic)
+
+	// 서브도메인 탈취 탐지: HTTP 없이 DNS만으로 판정하므로 기본 활성이며 비용이 낮다.
+	if opts.Takeover {
+		td := service.NewTakeoverScanner(nil, nil)
+		td.SetProgress(progress)
+		orch.SetTakeover(td)
+	}
+
+	// CVE 보강: 발견된 취약점에 EPSS(악용 확률)·CISA KEV(실제 악용)와 선택적으로 NVD CVSS를 채운다.
+	if opts.Enrich {
+		en := service.NewCVEEnricher(nil, opts.NVD)
+		en.SetProgress(progress)
+		orch.SetEnricher(en)
+	}
 	return orch
 }
 

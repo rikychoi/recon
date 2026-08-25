@@ -76,12 +76,34 @@ func (TextFormatter) Format(w io.Writer, r ScanResult) error {
 	}
 	fmt.Fprintln(w)
 
-	// 취약점 (CVSS 높은 순 정렬)
+	// 취약점 (위험 우선순위 정렬: 실제 악용(KEV) → CVSS → 악용 확률(EPSS))
 	vulns := append([]Vulnerability(nil), r.Vulnerabilities...)
-	sort.Slice(vulns, func(i, j int) bool { return vulns[i].CVSS > vulns[j].CVSS })
+	sort.Slice(vulns, func(i, j int) bool {
+		if vulns[i].KEV != vulns[j].KEV {
+			return vulns[i].KEV // KEV(실제 악용 중)를 최상단으로.
+		}
+		if vulns[i].CVSS != vulns[j].CVSS {
+			return vulns[i].CVSS > vulns[j].CVSS
+		}
+		return vulns[i].EPSS > vulns[j].EPSS
+	})
 	fmt.Fprintf(w, "[취약점] (%d개)\n", len(vulns))
 	for _, v := range vulns {
 		fmt.Fprintf(w, "  - [%.1f %s] %s (%s) @ %s\n", v.CVSS, v.Severity, v.Name, v.ID, v.Target)
+		// 보강 정보(CVE/EPSS/KEV)가 있으면 부가 라인으로 함께 표시한다.
+		var tags []string
+		if len(v.CVEs) > 0 {
+			tags = append(tags, strings.Join(v.CVEs, ","))
+		}
+		if v.EPSS > 0 {
+			tags = append(tags, fmt.Sprintf("EPSS %.1f%%", v.EPSS*100))
+		}
+		if v.KEV {
+			tags = append(tags, "KEV(실제 악용 중)")
+		}
+		if len(tags) > 0 {
+			fmt.Fprintf(w, "      %s\n", strings.Join(tags, " | "))
+		}
 	}
 	return nil
 }

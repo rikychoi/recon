@@ -33,3 +33,19 @@ type VulnerabilityScanner interface {
 	// 서비스 정보를 통해 각 점검 도구가 적합한 서비스(예: http)에만 실행할 수 있다.
 	Scan(ctx context.Context, targets []model.Port) ([]model.Vulnerability, error)
 }
+
+// Enricher는 발견된 취약점에 외부 위협 인텔리전스(NVD/EPSS/KEV)를 보강한다.
+// 네트워크 조회 실패는 치명적이지 않으므로 최선노력(best-effort)으로 동작하며,
+// 오류를 반환하지 않고 보강 가능한 정보만 채워 원본 순서 그대로 돌려준다.
+type Enricher interface {
+	// Enrich는 각 취약점의 연관 CVE를 식별하고 EPSS(악용 확률)·KEV(실제 악용) 정보와
+	// (CVSS가 비어 있으면) NVD의 권위 있는 CVSS 점수를 채워 반환한다.
+	Enrich(ctx context.Context, vulns []model.Vulnerability) []model.Vulnerability
+}
+
+// TakeoverDetector는 댕글링 CNAME(가리키는 대상이 사라진 CNAME)을 근거로
+// 서브도메인 탈취 가능성을 탐지한다. 탐지 결과는 취약점(Vulnerability)으로 표현한다.
+type TakeoverDetector interface {
+	// Detect는 루트 도메인과 서브도메인들의 CNAME을 검사하여 탈취 가능 후보를 취약점으로 반환한다.
+	Detect(ctx context.Context, domain string, subs []model.Subdomain) []model.Vulnerability
+}

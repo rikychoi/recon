@@ -28,11 +28,19 @@ type Orchestrator struct {
 	subs             SubdomainScanner     // 서브도메인 열거
 	port             PortScanner          // 포트 스캔
 	vuln             VulnerabilityScanner // 취약점 점검
+	takeover         TakeoverDetector     // 서브도메인 탈취 탐지(nil이면 건너뜀)
+	enricher         Enricher             // CVE 보강(NVD/EPSS/KEV, nil이면 건너뜀)
 	progress         io.Writer            // 진행 상황 출력 대상(nil이면 미출력)
 	progressMu       sync.Mutex           // 병렬 구간에서 진행 로그 출력을 직렬화한다.
 	assetConcurrency int                  // 자산별 파이프라인 동시 실행 상한
 	allowPublic      bool                 // 공인(외부) IP 대상 스캔 허용 여부(기본 false=차단)
 }
+
+// SetTakeover는 서브도메인 탈취 탐지기를 지정한다(nil이면 해당 단계를 건너뛴다).
+func (o *Orchestrator) SetTakeover(t TakeoverDetector) { o.takeover = t }
+
+// SetEnricher는 취약점 CVE 보강기를 지정한다(nil이면 해당 단계를 건너뛴다).
+func (o *Orchestrator) SetEnricher(e Enricher) { o.enricher = e }
 
 // SetAllowPublic은 공인(외부) IP 대상에 대한 포트스캔·취약점점검 허용 여부를 지정한다.
 // 기본은 false로, 사설/로컬 IP가 아닌 대상은 경고 후 스캔에서 제외한다.
@@ -116,6 +124,15 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 		}
 	}
 
+	// 2-1) 서브도메인 탈취(댕글링 CNAME) 탐지 — HTTP 없이 DNS만으로 판정한다.
+	//      탐지 결과는 취약점으로 표현하여 이후 단계의 취약점과 함께 보강·취합한다.
+	var baseVulns []model.Vulnerability
+	if o.takeover != nil {
+		progressf(o.progress, "[*] 서브도메인 탈취(댕글링 CNAME) 탐지 중...\n")
+		baseVulns = o.takeover.Detect(ctx, domain, result.Asset.Subdomains)
+		progressf(o.progress, "[+] 탈취 후보 %d건\n", len(baseVulns))
+	}
+
 	// 3) 식별된 자산을 IP 기준으로 중복 제거한다.
 	//    같은 IP를 가리키는 호스트명은 하나의 자산으로 묶어 포트 스캔이 한 번만 수행되게 한다.
 	rootIPs := extractHostIPs(result.Asset.DNSRecords)
@@ -126,7 +143,8 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 	assets = o.guardPublicAssets(assets)
 
 	if o.port == nil && o.vuln == nil {
-		// 포트 스캔·취약점 점검이 모두 비활성이면 자산 식별 결과만 반환한다.
+		// 포트 스캔·취약점 점검이 모두 비활성이면 자산 식별(+탈취 탐지) 결과만 반환한다.
+		result.Vulnerabilities = o.finishVulns(ctx, baseVulns)
 		result.FinishedAt = time.Now()
 		progressf(o.progress, "[*] 점검 완료 (소요 %s)\n", result.Duration().Round(time.Millisecond))
 		return result, nil
@@ -137,9 +155,9 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 
 	// 4) 자산별 (포트스캔 → 취약점점검) 파이프라인을 고루틴으로 병렬 실행하고 결과를 취합한다.
 	var (
-		mu       sync.Mutex            // allPorts/allVulns 취합 보호
-		allPorts []model.Port          // 모든 자산의 포트 스캔 결과
-		allVulns []model.Vulnerability // 모든 자산의 취약점 점검 결과
+		mu       sync.Mutex   // allPorts/allVulns 취합 보호
+		allPorts []model.Port // 모든 자산의 포트 스캔 결과
+		allVulns = baseVulns  // 탈취 탐지 결과를 시작점으로 취약점을 취합한다.
 		wg       sync.WaitGroup
 	)
 	sem := make(chan struct{}, o.assetConcurrency) // 동시 실행 자산 수 제한
@@ -169,15 +187,26 @@ func (o *Orchestrator) Run(ctx context.Context, domain string) (model.ScanResult
 
 	// 병렬 수집이라 순서가 비결정적이므로 정렬하여 보고서 출력을 안정화한다.
 	sortPorts(allPorts)
-	sortVulns(allVulns)
 	result.Asset.Ports = allPorts
-	result.Vulnerabilities = allVulns
+	result.Vulnerabilities = o.finishVulns(ctx, allVulns)
 
 	progressf(o.progress, "[+] 취합 결과: 열린 포트 %d개, 취약점 %d건\n", len(allPorts), len(allVulns))
 
 	result.FinishedAt = time.Now()
 	progressf(o.progress, "[*] 점검 완료 (소요 %s)\n", result.Duration().Round(time.Millisecond))
 	return result, nil
+}
+
+// finishVulns는 취합된 취약점을 정렬한 뒤 CVE 보강(NVD/EPSS/KEV)을 적용하여 최종 목록을 만든다.
+// 보강기가 없으면 정렬만 수행한다. 보강으로 CVSS가 바뀔 수 있으므로 다시 정렬한다.
+func (o *Orchestrator) finishVulns(ctx context.Context, vulns []model.Vulnerability) []model.Vulnerability {
+	sortVulns(vulns)
+	if o.enricher != nil && len(vulns) > 0 {
+		progressf(o.progress, "[*] CVE 보강(NVD/EPSS/KEV) 적용 중...\n")
+		vulns = o.enricher.Enrich(ctx, vulns)
+		sortVulns(vulns)
+	}
+	return vulns
 }
 
 // scanOne은 하나의 자산(IP)에 대해 포트 스캔과 취약점 점검을 순차 실행한다.

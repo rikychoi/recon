@@ -141,8 +141,30 @@ go run ./cmd/recon -domain example.com -full -format json
 | `-msf` | `false` | `metasploit` 실제 CVE 점검 |
 | `-full` | `false` | 내장 포트스캔 + `nuclei` + `metasploit` 을 한 번에 |
 | `-allow-public` | `false` | 공인(외부) IP 대상 스캔 허용. **기본은 사설/로컬 IP만** 스캔하고 공인 IP는 경고 후 제외 |
+| `-enrich` | `true` | 발견된 취약점에 **EPSS**(악용 확률) · **CISA KEV**(실제 악용 중) 정보를 보강 (외부 API 조회) |
+| `-nvd` | `false` | CVSS가 비어 있는 취약점을 **NVD**로 보강 (레이트 제한이 있어 기본 비활성) |
+| `-takeover` | `true` | **서브도메인 탈취**(댕글링 CNAME) 탐지 (DNS 조회만 수행, 부작용 없음) |
 
 > 포트 스캔 엔진은 `-nmap`이 있으면 nmap을, 없으면(`-portscan`/`-full`) 내장 스캐너를 씁니다.
+
+### CVE 위험 우선순위화 (EPSS · KEV · NVD)
+
+발견된 취약점은 CVSS만으로는 "무엇부터 볼지"를 정하기 어렵습니다. `recon`은 각 취약점의
+CVE를 식별한 뒤 외부 위협 인텔리전스로 보강하여 **실제 위험 순서**로 정렬합니다.
+
+- **EPSS** (FIRST.org) — 향후 30일 내 악용될 확률(0~100%). "CVSS는 높지만 실제 악용 가능성은 낮은" CVE를 걸러냅니다.
+- **CISA KEV** — 미국 CISA가 **실제 악용을 확인**한 CVE 목록. 등재된 취약점은 보고서 최상단에 표시됩니다.
+- **NVD** (`-nvd`) — 탐지 도구가 CVSS를 주지 못한 경우 권위 있는 CVSS 점수를 채웁니다.
+
+정렬 우선순위: **KEV(실제 악용) → CVSS → EPSS(악용 확률)**. 이들은 CVE ID만 외부 조회하며,
+대상 서버로는 아무것도 보내지 않습니다. 오프라인이거나 조회에 실패해도 점검은 그대로 완주합니다.
+
+### 서브도메인 탈취 탐지 (댕글링 CNAME)
+
+`-takeover`(기본 켜짐)는 서브도메인의 CNAME이 GitHub Pages·Heroku·S3·Azure 등
+**서드파티 서비스를 가리키는데 그 대상이 사라진 경우**(댕글링)를 탐지합니다. 이는 공격자가
+해당 리소스를 선점해 서브도메인을 장악할 수 있는 고위험 취약점으로, 결과 보고서의 취약점
+목록에 `takeover` 소스로 함께 표시됩니다. **HTTP 요청 없이 DNS 조회만** 수행합니다.
 
 ---
 
