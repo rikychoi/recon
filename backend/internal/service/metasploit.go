@@ -23,14 +23,19 @@ type MSFModule struct {
 	Port     int     // 대상 서비스 기본 포트(포트 정보가 없을 때 RPORT로 사용, 0이면 미설정)
 	Payload  string  // 페이로드 모듈명(비면 모듈 기본 페이로드 사용, exploit 모듈에만 의미)
 	Service  string  // 적합 서비스 키워드(예: "http"). 이 키워드를 포함하는 서비스 포트에만 실행. 비면 모든 포트.
+	Product  string  // 적합 제품 키워드(예: "struts", "httpd"). nmap이 식별한 제품/CPE에 이 키워드가 포함될 때만 실행.
+	//         제품 정보가 없으면(내장 스캐너 등) Service 키워드로 폴백한다. 비면 제품 조건 없음.
 }
 
 // DefaultMSFModules는 기본으로 실행할 실 CVE 점검 모듈 집합이다.
 // 각 모듈은 대상에 대해 실제로 실행(run)되며, 긍정 결과([+]/세션)를 해당 CVE 취약점으로 기록한다.
 // 대상 특성에 맞는 추가 모듈은 호출 측에서 등록할 수 있다.
 var DefaultMSFModules = []MSFModule{
-	{Name: "exploit/multi/http/struts2_content_type_ognl", CVE: "CVE-2017-5638", CVSS: 9.8, Port: 8080, Payload: "cmd/unix/reverse_bash", Service: "http"},
-	{Name: "exploit/multi/http/apache_normalize_path_rce", CVE: "CVE-2021-41773", CVSS: 7.5, Port: 80, Payload: "cmd/unix/reverse_bash", Service: "http"},
+	// Struts2 OGNL RCE: nmap이 "struts"(제품/CPE)를 식별한 http 포트에만 실행한다.
+	{Name: "exploit/multi/http/struts2_content_type_ognl", CVE: "CVE-2017-5638", CVSS: 9.8, Port: 8080, Payload: "cmd/unix/reverse_bash", Service: "http", Product: "struts"},
+	// Apache httpd 경로 정규화 RCE: 제품이 "httpd"(Apache httpd)로 식별된 포트에만 실행한다(Tomcat 등 제외).
+	{Name: "exploit/multi/http/apache_normalize_path_rce", CVE: "CVE-2021-41773", CVSS: 7.5, Port: 80, Payload: "cmd/unix/reverse_bash", Service: "http", Product: "httpd"},
+	// Log4Shell: Log4j는 배너로 제품 식별이 어려워 제품 조건 없이 모든 http 포트를 스캔한다(auxiliary, 저위험).
 	{Name: "auxiliary/scanner/http/log4shell_scanner", CVE: "CVE-2021-44228", CVSS: 10.0, Port: 8080, Service: "http"},
 }
 
@@ -128,14 +133,27 @@ func isExploitModule(name string) bool {
 	return strings.HasPrefix(name, "exploit/")
 }
 
-// moduleMatchesService는 모듈이 해당 포트의 서비스에 적합한지 판정한다.
-// 모듈 Service가 비면 모든 서비스에 적합(true)하고, 값이 있으면 포트 서비스명에
-// 그 키워드가 포함될 때만 적합하다. 예: Service "http"는 http/https/http-proxy 등과 일치한다.
-func moduleMatchesService(mod MSFModule, service string) bool {
+// moduleMatchesPort는 모듈이 해당 포트에 적합한지(=이 포트에 실행할 취약점인지) 판정한다.
+// 이 함수가 "서비스 인식 → 적용 취약점 매핑"의 핵심이다.
+//
+//  1. 제품 조건이 있는 모듈: nmap이 식별한 제품/CPE에 제품 키워드가 포함될 때만 적합하다.
+//     예: Product "struts"는 제품 "Apache Struts"나 CPE "...:struts..."에만 일치한다.
+//     → Apache/nginx 등 다른 제품 포트에는 실행하지 않아 오탐·소음을 줄인다.
+//  2. 제품 정보가 없으면(내장 TCP 스캐너 등 -sV 미사용): 정밀 매칭이 불가하므로
+//     Service 키워드로 폴백해 커버리지를 유지한다(정밀 매칭은 -nmap 사용 시).
+//  3. 제품 조건이 없는 모듈: 기존대로 Service 키워드로만 판정한다.
+func moduleMatchesPort(mod MSFModule, p model.Port) bool {
+	if mod.Product != "" {
+		detail := strings.ToLower(strings.TrimSpace(p.Product + " " + p.CPE))
+		if detail != "" {
+			return strings.Contains(detail, strings.ToLower(mod.Product))
+		}
+		// 제품 정보 없음 → Service 키워드 폴백(아래로 진행).
+	}
 	if mod.Service == "" {
 		return true
 	}
-	return strings.Contains(strings.ToLower(service), strings.ToLower(mod.Service))
+	return strings.Contains(strings.ToLower(p.Service), strings.ToLower(mod.Service))
 }
 
 // localOutboundIP는 외부로 나가는 경로의 로컬 IP(사설 IP 등)를 반환한다.
@@ -152,11 +170,12 @@ func localOutboundIP() string {
 	return ""
 }
 
-// portGroup은 같은 포트·서비스를 가진 대상 호스트 묶음이다.
+// portGroup은 같은 포트·서비스·제품을 가진 대상 호스트 묶음이다.
 type portGroup struct {
-	port    int      // 포트 번호(0이면 포트 정보 없음)
-	service string   // 포트의 서비스명(예: http, ssh)
-	hosts   []string // 이 포트가 열린 호스트 목록
+	port    int        // 포트 번호(0이면 포트 정보 없음)
+	service string     // 포트의 서비스명(예: http, ssh)
+	sample  model.Port // 이 그룹의 대표 포트(제품/버전/CPE 등 매칭 근거)
+	hosts   []string   // 이 포트가 열린 호스트 목록
 }
 
 // Scan은 설정된 각 모듈을 적합한 서비스 포트에 대해서만 실제로 실행(run)하고
@@ -169,18 +188,20 @@ func (m *MetasploitScanner) Scan(ctx context.Context, targets []model.Port) ([]m
 		return nil, nil
 	}
 
-	// 동일한 (포트, 서비스)별로 호스트를 그룹화한다. Number 0은 포트 정보가 없는 대상이다.
+	// 동일한 (포트, 서비스, 제품, CPE)별로 호스트를 그룹화한다. Number 0은 포트 정보가 없는 대상이다.
+	// 제품/CPE까지 키에 넣어, 같은 포트라도 제품이 다르면 별도로 매칭·실행되게 한다.
 	type key struct {
-		port    int
-		service string
+		port             int
+		service, product string
+		cpe              string
 	}
 	grouped := make(map[key]*portGroup)
 	var order []key
 	for _, p := range targets {
-		k := key{port: p.Number, service: p.Service}
+		k := key{port: p.Number, service: p.Service, product: p.Product, cpe: p.CPE}
 		g, ok := grouped[k]
 		if !ok {
-			g = &portGroup{port: p.Number, service: p.Service}
+			g = &portGroup{port: p.Number, service: p.Service, sample: p}
 			grouped[k] = g
 			order = append(order, k)
 		}
@@ -226,8 +247,8 @@ func (m *MetasploitScanner) Scan(ctx context.Context, targets []model.Port) ([]m
 				addGroup(mod, g.hosts, defPort)
 				continue
 			}
-			if !moduleMatchesService(mod, g.service) {
-				continue // 모듈이 적합하지 않은 서비스 포트는 건너뛴다(예: http 모듈 vs smb 포트).
+			if !moduleMatchesPort(mod, g.sample) {
+				continue // 모듈이 적합하지 않은 포트는 건너뛴다(예: struts 모듈 vs Apache httpd 포트).
 			}
 			addGroup(mod, g.hosts, strconv.Itoa(g.port))
 		}

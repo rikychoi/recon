@@ -22,11 +22,14 @@ type DNSRecord struct {
 
 // Port는 포트 스캔으로 식별된 열린 포트를 표현한다.
 type Port struct {
-	Target   string `json:"target"`   // 포트를 스캔한 대상(hostname 또는 IP)
-	Number   int    `json:"number"`   // 포트 번호
-	Protocol string `json:"protocol"` // 프로토콜 (tcp/udp)
-	State    string `json:"state"`    // 포트 상태 (open|filtered 등)
-	Service  string `json:"service"`  // 서비스 명
+	Target   string `json:"target"`            // 포트를 스캔한 대상(hostname 또는 IP)
+	Number   int    `json:"number"`            // 포트 번호
+	Protocol string `json:"protocol"`          // 프로토콜 (tcp/udp)
+	State    string `json:"state"`             // 포트 상태 (open|filtered 등)
+	Service  string `json:"service"`           // 서비스 명 (예: http, ssh)
+	Product  string `json:"product,omitempty"` // 서비스 제품명 (예: Apache httpd) — nmap -sV로 식별
+	Version  string `json:"version,omitempty"` // 서비스 버전 (예: 2.4.49) — nmap -sV로 식별
+	CPE      string `json:"cpe,omitempty"`     // CPE 식별자 (예: cpe:/a:apache:http_server:2.4.49)
 }
 
 // Asset는 대상 도메인에 대해 식별된 자산 정보를 한데 모은다.

@@ -56,7 +56,10 @@ type nmapState struct {
 }
 
 type nmapService struct {
-	Name string `xml:"name,attr"`
+	Name    string   `xml:"name,attr"`    // 서비스명 (http, ssh 등)
+	Product string   `xml:"product,attr"` // 제품명 (Apache httpd 등)
+	Version string   `xml:"version,attr"` // 버전 (2.4.49 등)
+	CPEs    []string `xml:"cpe"`          // CPE 식별자 목록 (cpe:/a:apache:http_server:2.4.49 등)
 }
 
 // Scan은 지정한 대상 목록을 순회하며 nmap -sV -Pn -oX - 명령을 실행한다.
@@ -93,12 +96,20 @@ func parseNmapXML(target string, raw []byte) []model.Port {
 				if serviceName == "" {
 					serviceName = "unknown"
 				}
+				// -sV가 식별한 제품/버전/CPE를 함께 담아 취약점 매핑의 근거로 쓴다.
+				cpe := ""
+				if len(port.Service.CPEs) > 0 {
+					cpe = port.Service.CPEs[0]
+				}
 				ports = append(ports, model.Port{
 					Target:   target,
 					Number:   port.PortID,
 					Protocol: port.Protocol,
 					State:    port.State.State,
 					Service:  serviceName,
+					Product:  port.Service.Product,
+					Version:  port.Service.Version,
+					CPE:      cpe,
 				})
 			}
 		}

@@ -72,7 +72,12 @@ func (TextFormatter) Format(w io.Writer, r ScanResult) error {
 	// 포트
 	fmt.Fprintf(w, "[포트] (%d개)\n", len(r.Asset.Ports))
 	for _, p := range r.Asset.Ports {
-		fmt.Fprintf(w, "  - %s/%s %d %s %s\n", p.Target, p.Protocol, p.Number, p.State, p.Service)
+		// 서비스에 더해 nmap이 식별한 제품/버전을 함께 표시한다(취약점 매핑의 근거).
+		svc := p.Service
+		if p.Product != "" {
+			svc += " (" + strings.TrimSpace(p.Product+" "+p.Version) + ")"
+		}
+		fmt.Fprintf(w, "  - %s/%s %d %s %s\n", p.Target, p.Protocol, p.Number, p.State, svc)
 	}
 	fmt.Fprintln(w)
 
