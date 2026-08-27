@@ -2,11 +2,9 @@ package service
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"io"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,15 +43,25 @@ const (
 )
 
 // MetasploitScanner는 msfconsole을 실행하여 취약점을 점검하는 VulnerabilityScanner 구현이다.
-// 각 모듈을 개별 msfconsole 세션으로 병렬 실행하며, exploit 모듈에는 LHOST와 고유 LPORT를 부여한다.
+// 각 모듈에 대해 msfconsole 명령을 실행하며, exploit 모듈에는 LHOST와 고유 LPORT를 부여한다.
+// 실행기(runner)로 공유 MSFSession을 주입하면 msfconsole을 프로그램당 1회만 부팅해 재사용한다.
 type MetasploitScanner struct {
 	binary      string      // msfconsole 경로 (기본 "msfconsole")
+	runner      msfRunner   // msfconsole 실행기(기본 oneShotMSF, 공유 세션 주입 가능)
 	modules     []MSFModule // 실행할 모듈 목록
 	lhosts      []string    // 리버스 콜백을 받을 LHOST 후보(비면 로컬 IP 자동 감지)
 	baseLPort   int         // LPORT 시작값
-	concurrency int         // 모듈 동시 실행 상한
+	concurrency int         // 모듈 동시 실행 상한(공유 세션 사용 시 세션이 직렬화)
 	progress    io.Writer   // 진행 상황 출력 대상(nil이면 미출력)
 	progressMu  sync.Mutex  // 병렬 실행 시 진행 로그 출력을 직렬화
+}
+
+// SetSession은 프로그램 수명 동안 유지되는 공유 msfconsole 세션을 실행기로 지정한다.
+// 지정하면 모듈 실행이 매번 새로 부팅하지 않고 하나의 msfconsole에서 (세션이 직렬화하여) 이뤄진다.
+func (m *MetasploitScanner) SetSession(sess msfRunner) {
+	if sess != nil {
+		m.runner = sess
+	}
 }
 
 // SetProgress는 모듈별 진행 상황을 출력할 Writer를 지정한다(nil이면 미출력).
@@ -85,6 +93,7 @@ func NewMetasploitScanner(binary string, modules ...MSFModule) *MetasploitScanne
 	}
 	return &MetasploitScanner{
 		binary:      binary,
+		runner:      oneShotMSF{binary: binary}, // 기본: 호출마다 부팅(폴백). 공유 세션은 SetSession으로 주입.
 		modules:     modules,
 		baseLPort:   defaultMSFBaseLPort,
 		concurrency: defaultMSFConcurrency,
@@ -125,7 +134,8 @@ func buildResourceScript(r msfRun) string {
 	if r.lport > 0 {
 		s += "; set LPORT " + strconv.Itoa(r.lport)
 	}
-	return s + "; run; exit"
+	// exit는 실행기가 관리한다(oneShotMSF는 뒤에 "; exit"를 붙이고, 공유 세션은 붙이지 않는다).
+	return s + "; run"
 }
 
 // isExploitModule은 리버스/바인드 페이로드가 필요한 exploit 계열 모듈인지 판정한다.
@@ -290,15 +300,12 @@ func (m *MetasploitScanner) runTask(ctx context.Context, run msfRun) []model.Vul
 	m.logf("    - [%d/%d] msf %s (CVE=%s RPORT=%s LPORT=%d) ...\n",
 		run.index+1, run.total, run.mod.Name, run.mod.CVE, run.rport, run.lport)
 	script := buildResourceScript(run)
-	cmd := exec.CommandContext(ctx, m.binary, "-q", "-x", script)
-	// msfconsole이 부모 터미널을 raw 모드로 바꿔 입력이 먹통이 되는 것을 막기 위해
-	// 자식 프로세스를 제어 터미널에서 분리한다.
-	cmd.SysProcAttr = detachedProcAttr()
-	out, err := cmd.Output()
+	// 실행기를 통해 실행한다. 공유 세션이면 하나의 msfconsole에서, 폴백이면 새 프로세스로 실행된다.
+	out, err := m.runner.RunMSF(ctx, script)
 	if err != nil {
 		return nil
 	}
-	return parseMSFOutput(bytes.NewReader(out), run.mod)
+	return parseMSFOutput(strings.NewReader(out), run.mod)
 }
 
 // parseMSFOutput은 msfconsole 출력에서 [+] 긍정 결과 줄을 취약점으로 변환한다.

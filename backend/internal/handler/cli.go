@@ -107,10 +107,11 @@ func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*
 		s.SetProgress(progress)
 		scanners = append(scanners, s)
 	}
+	var catalogScanner *service.MetasploitScanner
 	if useMSF {
-		s := service.NewMetasploitScanner(service.ToolPath("msfconsole"))
-		s.SetProgress(progress)
-		scanners = append(scanners, s)
+		catalogScanner = service.NewMetasploitScanner(service.ToolPath("msfconsole"))
+		catalogScanner.SetProgress(progress)
+		scanners = append(scanners, catalogScanner)
 	}
 	var searchScanner *service.MSFSearchScanner
 	if useMSFSearch {
@@ -163,14 +164,20 @@ func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*
 		orch.SetEnricher(en)
 	}
 
-	// 공유 msfconsole 세션: msf-search가 활성이면 msfconsole을 1회만 부팅해 프로그램 수명 동안 유지한다.
-	// (매 검색·검증마다 새로 부팅하던 낭비를 없앤다.) 시작에 실패하면 개별 부팅(폴백)으로 동작한다.
+	// 공유 msfconsole 세션: msf 기반 스캐너(카탈로그/동적검색)가 하나라도 활성이면
+	// msfconsole을 프로그램당 1회만 부팅해 유지하고 모든 msf 스캐너가 이 세션을 공유한다.
+	// (매 명령·모듈마다 새로 부팅하던 낭비를 없앤다.) 시작 실패 시 개별 부팅(폴백)으로 동작한다.
 	cleanup := func() {}
-	if searchScanner != nil {
+	if catalogScanner != nil || searchScanner != nil {
 		sess := service.NewMSFSession(service.ToolPath("msfconsole"))
 		sess.SetProgress(progress)
 		if err := sess.Start(ctx); err == nil {
-			searchScanner.SetSession(sess)
+			if catalogScanner != nil {
+				catalogScanner.SetSession(sess)
+			}
+			if searchScanner != nil {
+				searchScanner.SetSession(sess)
+			}
 			cleanup = func() { sess.Close() } // 프로그램 종료 시 세션도 함께 종료한다.
 		} else {
 			fmt.Fprintf(progress, "[!] msfconsole 세션 시작 실패(개별 실행으로 대체): %v\n", err)

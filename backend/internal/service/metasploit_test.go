@@ -69,11 +69,14 @@ func TestBuildResourceScript(t *testing.T) {
 		"set LHOST 10.0.0.5",
 		"set LPORT 4444",
 		"run",
-		"exit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("리소스 스크립트에 %q가 없음: %q", want, got)
 		}
+	}
+	// exit는 실행기(oneShotMSF/세션)가 관리하므로 리소스 스크립트에는 포함되지 않아야 한다.
+	if strings.Contains(got, "exit") {
+		t.Errorf("리소스 스크립트에 exit가 포함되면 안 됨: %q", got)
 	}
 
 	// 포트/페이로드/LHOST가 비면 해당 항목을 설정하지 않아야 한다(모듈 기본값 사용).
