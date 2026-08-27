@@ -70,28 +70,39 @@ Go 기반 명령줄(CLI) 도구입니다.
 
 ---
 
-## 핵심: 서비스 인식 → 적용 취약점 자동 매핑
+## 핵심: 서비스 인식 → 적용 취약점 자동 검색·검증 (Metasploit 자동화)
 
 이 도구의 심장부입니다. **"열린 포트에 무슨 제품이 도는지"를 인식하고, 그 제품에
-실제로 적용되는 취약점 점검만 자동으로 골라 실행**합니다. Metasploit의 수많은 모듈 중
-무엇을 써야 하는지 사용자가 몰라도 됩니다.
+적용되는 Metasploit 모듈을 자동으로 검색해 점검**합니다. Metasploit의 수천 개 모듈 중
+무엇을 써야 하는지 사용자가 몰라도 됩니다. — 이것이 `recon`이 자동화하려는 바로 그 작업입니다.
 
 ```text
-nmap -sV        →   제품/버전/CPE 인식          →   맞는 모듈만 실행
-──────────────      ─────────────────────────       ──────────────────────
-8080/tcp open       Apache Struts (cpe:...struts)    struts2_content_type_ognl (CVE-2017-5638)
-  80/tcp open       Apache httpd 2.4.49              apache_normalize_path_rce (CVE-2021-41773)
-  22/tcp open       OpenSSH 8.2                      (해당 http 모듈 실행 안 함)
+nmap -sV        →   제품/버전 인식     →   msf search로 모듈 발굴      →   check로 안전 검증
+──────────────      ────────────────       ──────────────────────────      ────────────────────
+8080/tcp open       Apache Struts          search struts type:exploit      각 모듈에 check 실행 →
+  80/tcp open       Apache httpd 2.4.49     search httpd type:exploit         "취약함" 확인된 것만 기록
+  22/tcp open       OpenSSH 8.2            (해당 없음 → 건너뜀)
 ```
 
-- **제품 기반 매칭** — 각 점검 모듈에는 적합한 **제품 키워드**(`struts`, `httpd` 등)가 붙어 있습니다.
-  nmap이 식별한 제품/CPE에 그 키워드가 있을 때만 해당 모듈을 실행합니다.
-  → Apache httpd 포트에 Struts 익스플로잇을 던지는 식의 **헛발질과 오탐·소음을 없앱니다.**
-- **똑똑한 폴백** — `nmap`을 쓰지 않아 제품을 알 수 없을 때(내장 포트 스캐너 사용 시)는
-  서비스 종류(`http` 등) 기준으로 폴백해 **커버리지를 유지**합니다.
-  가장 정밀한 매칭을 원하면 `-nmap`(= `nmap -sV`)을 쓰세요.
-- **확장 가능** — 새 취약점을 추가하려면 모듈 목록에 `{모듈경로, CVE, CVSS, 제품 키워드}` 한 줄만
-  더하면 됩니다. 그 제품이 감지되는 순간 자동으로 점검에 포함됩니다.
+동작 방식(`-msf-search`, `-full`에 기본 포함):
+
+1. **제품 인식** — `nmap -sV`가 포트의 제품/버전을 식별합니다(예: `Apache Struts`).
+2. **모듈 동적 검색** — 그 제품명으로 msfconsole `search`를 실행해 **적용 가능한 익스플로잇 모듈을
+   실시간으로 발굴**합니다. 고정 목록이 아니라 **Metasploit이 가진 전체 모듈**이 대상이라 커버리지가 넓습니다.
+3. **안전 검증(check)** — 발굴한 모듈을 실제 공격(exploit) 대신 **`check`(비침투 검증)** 로만 실행해
+   "이 대상이 정말 취약한가"를 확인합니다. 셸을 따거나 페이로드를 던지지 않으므로 **부작용이 없습니다.**
+4. **결과 기록** — `check`가 취약(또는 취약 추정)으로 판정한 모듈만 취약점으로 남기고,
+   가능하면 모듈 정보에서 **CVE**까지 뽑아 이어지는 EPSS/KEV/NVD 보강으로 연결합니다.
+
+> ⚠️ 정밀 검색은 **제품 인식이 전제**입니다. `-msf-search`는 `-nmap`(= `nmap -sV`)과 함께 쓰세요.
+> 내장 포트 스캐너만 쓰면 제품을 몰라 서비스 종류(`http` 등)로 폭넓게 검색하게 됩니다.
+
+> ⚙️ **msfconsole 생명주기 — 프로그램당 1회 부팅.** msfconsole은 부팅에 수십 초가 걸리므로,
+> `recon`은 점검 시작 시 **msfconsole을 한 번만 켜서 세션을 유지**하고 모든 `search`·`check`를
+> 그 세션에 흘려보낸 뒤, **프로그램 종료 시 함께 닫습니다.** 명령마다 새로 켜지 않아 훨씬 빠릅니다.
+
+> 🔒 실제 익스플로잇까지 시도하는 공격적 모드가 필요하면 별도의 `-msf`(고정 카탈로그 + 실제 exploit)를
+> 쓸 수 있습니다. **격리 환경 전용**입니다. 기본 자동화 흐름(`-full`)은 안전한 `check` 검증만 씁니다.
 
 > 이렇게 찾은 취약점은 이어서 **EPSS(악용 확률)·CISA KEV(실제 악용 중)** 로 보강되어
 > **위험이 높은 순서로 정렬**됩니다. (아래 [CVE 위험 우선순위화](#cve-위험-우선순위화-epss--kev--nvd) 참고)
@@ -110,7 +121,7 @@ nmap -sV        →   제품/버전/CPE 인식          →   맞는 모듈만 �
 | (내장) | 포트 스캔 (Go로 구현, 설치 불필요) | `-portscan`/`-full` 시 |
 | `nmap` | 포트 스캔 (서비스 버전까지 상세) | `-nmap` 시(선택) |
 | `nuclei` | 템플릿 기반 취약점 점검 | `-nuclei`/`-full` 시 |
-| `msfconsole` | 실제 CVE 취약점 점검 | `-msf`/`-full` 시 |
+| `msfconsole` | 제품별 모듈 검색·검증(또는 실제 exploit) | `-msf-search`/`-msf`/`-full` 시 |
 
 - **DNS 조회·서브도메인 열거·기본 포트 스캔은 외부 도구 없이** 동작합니다.
   (`-portscan`은 Go로 구현된 내장 스캐너라 아무것도 설치할 필요가 없습니다.)
@@ -127,8 +138,8 @@ go mod tidy
 # 1) 아무 설치 없이: 자산 식별 + 내장 포트 스캔
 go run ./cmd/recon -domain example.com -portscan
 
-# 2) 전체 파이프라인 (내장 포트스캔 + nuclei + metasploit)
-go run ./cmd/recon -domain example.com -full -timeout 10m
+# 2) 전체 파이프라인 (권장: -nmap으로 제품 인식 → 제품 맞춤 msf 모듈 자동 검색·검증)
+go run ./cmd/recon -domain example.com -full -nmap -timeout 10m
 ```
 
 > ⚠️ **반드시 본인이 소유하거나 점검 권한을 받은 대상에만 사용하세요.** 자세한 내용은
@@ -153,11 +164,14 @@ go run ./cmd/recon -domain example.com -nmap
 # 포트 스캔 + nuclei 취약점 점검
 go run ./cmd/recon -domain example.com -portscan -nuclei
 
-# 포트 스캔 + metasploit 실제 CVE 점검
+# nmap으로 제품 인식 + metasploit 동적 모듈 검색·검증 (권장 조합)
+go run ./cmd/recon -domain example.com -nmap -msf-search -timeout 10m
+
+# metasploit 고정 카탈로그 + 실제 exploit 시도 (격리 환경 전용)
 go run ./cmd/recon -domain example.com -portscan -msf
 
-# 전체 파이프라인 (내장 포트스캔 + nuclei + metasploit)
-go run ./cmd/recon -domain example.com -full -timeout 10m
+# 전체 파이프라인 (제품 인식까지: 내장/nmap 포트스캔 + nuclei + msf-search)
+go run ./cmd/recon -domain example.com -full -nmap -timeout 10m
 
 # JSON으로 출력
 go run ./cmd/recon -domain example.com -full -format json
@@ -171,10 +185,11 @@ go run ./cmd/recon -domain example.com -full -format json
 | `-format` | `text` | 출력 형식 (`text` \| `json`) |
 | `-timeout` | `5m` | 전체 점검 제한 시간 (metasploit 사용 시 `10m` 권장) |
 | `-portscan` | `false` | **내장** 고루틴 TCP 포트 스캔 (외부 도구 불필요) |
-| `-nmap` | `false` | 외부 `nmap`으로 포트 스캔 |
+| `-nmap` | `false` | 외부 `nmap -sV`로 포트 스캔 (**제품·버전 인식** — `-msf-search`의 정밀도에 필수) |
 | `-nuclei` | `false` | `nuclei` 취약점 점검 |
-| `-msf` | `false` | `metasploit` 실제 CVE 점검 |
-| `-full` | `false` | 내장 포트스캔 + `nuclei` + `metasploit` 을 한 번에 |
+| `-msf-search` | `false` | **`metasploit` 동적 모듈 검색 점검.** 감지된 제품으로 `search`해 모듈을 발굴하고 `check`(비침투)로 검증. `-nmap`과 함께 권장. `-full`에 기본 포함 |
+| `-msf` | `false` | `metasploit` 고정 카탈로그 점검 — **실제 exploit 시도(부작용 가능). 격리 환경 전용** |
+| `-full` | `false` | 내장 포트스캔 + `nuclei` + **`-msf-search`(안전 검증)** 를 한 번에 |
 | `-allow-public` | `false` | 공인(외부) IP 대상 스캔 허용. **기본은 사설/로컬 IP만** 스캔하고 공인 IP는 경고 후 제외 |
 | `-enrich` | `true` | 발견된 취약점에 **EPSS**(악용 확률) · **CISA KEV**(실제 악용 중) 정보를 보강 (외부 API 조회) |
 | `-nvd` | `false` | CVSS가 비어 있는 취약점을 **NVD**로 보강 (레이트 제한이 있어 기본 비활성) |
@@ -428,7 +443,7 @@ go test ./... -race    # 병렬 처리 안전성까지 검증
 
 - 이 도구는 **권한이 부여된 화이트해킹(승인된 침투 테스트)** 을 목적으로 하며, 권한이 있는
   경우 라이브 서비스 서버까지 대상으로 사용할 수 있도록 설계됩니다.
-- **`-msf`/`-full`은 실제로 exploit을 실행**합니다(대상에 부작용이 생길 수 있음).
+- **`-msf`는 실제로 exploit을 실행**합니다(대상에 부작용이 생길 수 있음). `-msf-search`/`-full`은 `check`(비침투 검증)만 수행해 부작용이 없습니다.
   반드시 **본인이 소유하거나 명시적으로 점검 권한을 받은, 격리된 VM/테스트 환경**에서만
   사용하세요. 무단 스캔·취약점 점검은 법적 책임을 초래합니다.
 - 개발·테스트 단계에서는 라이브 서버를 대상으로 하지 않고, 격리된 VM/로컬 환경에 직접 구성한

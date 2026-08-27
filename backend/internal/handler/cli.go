@@ -23,7 +23,8 @@ type Options struct {
 	Nmap        bool          // nmap 포트 스캔 활성화(외부 nmap 사용)
 	Portscan    bool          // 내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)
 	Nuclei      bool          // nuclei 취약점 점검 활성화
-	MSF         bool          // metasploit 취약점 점검 활성화
+	MSF         bool          // metasploit 취약점 점검 활성화(고정 카탈로그 + 실제 익스플로잇)
+	MSFSearch   bool          // metasploit 동적 모듈 검색 점검 활성화(제품→모듈 search + check 검증)
 	Full        bool          // 자산 식별 → 포트 스캔 → 취약점 점검 전체 파이프라인 실행
 	AllowPublic bool          // 공인(외부) IP 대상 스캔 허용(기본 false=차단)
 	Enrich      bool          // 발견된 취약점에 CVE 보강(EPSS/KEV) 적용(기본 true)
@@ -42,7 +43,8 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.Nmap, "nmap", false, "nmap 포트 스캔 활성화(외부 nmap 사용)")
 	fs.BoolVar(&opts.Portscan, "portscan", false, "내장 고루틴 TCP 포트 스캔 활성화(외부 도구 불필요)")
 	fs.BoolVar(&opts.Nuclei, "nuclei", false, "nuclei 취약점 점검 활성화")
-	fs.BoolVar(&opts.MSF, "msf", false, "metasploit 취약점 점검 활성화")
+	fs.BoolVar(&opts.MSF, "msf", false, "metasploit 고정 카탈로그 점검(실제 익스플로잇 시도, 격리 환경 전용)")
+	fs.BoolVar(&opts.MSFSearch, "msf-search", false, "metasploit 동적 모듈 검색 점검(감지된 제품 → search로 모듈 발굴 → check로 안전 검증). -nmap과 함께 쓰면 정밀. -full에 포함됨")
 	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (내장 포트 스캔 + nuclei + metasploit)")
 	fs.BoolVar(&opts.AllowPublic, "allow-public", false, "공인(외부) IP 대상 스캔 허용 (기본: 사설/로컬 IP만 스캔, 공인 IP는 경고 후 제외)")
 	fs.BoolVar(&opts.Enrich, "enrich", true, "발견된 취약점에 CVE 보강(EPSS 악용확률/CISA KEV) 적용 (외부 API 조회)")
@@ -70,7 +72,9 @@ func Run(args []string) int {
 	ensureTools(ctx, opts, os.Stdin, os.Stderr)
 
 	// 진행 상황은 결과(stdout)와 분리하여 stderr로 실시간 출력한다.
-	orch := buildOrchestrator(opts, os.Stderr)
+	// cleanup은 공유 msfconsole 세션 등 프로그램 수명 자원을 종료 시 함께 정리한다.
+	orch, cleanup := buildOrchestrator(ctx, opts, os.Stderr)
+	defer cleanup()
 
 	// 자산 식별 → 취약점 점검으로 이어지는 전체 흐름을 한 번의 호출로 실행한다.
 	result, err := orch.Run(ctx, opts.Domain)
@@ -89,10 +93,12 @@ func Run(args []string) int {
 // buildOrchestrator는 옵션에 따라 자산 식별 스캐너와 취약점 스캐너를 조립한다.
 // -full은 사용 가능한 모든 취약점 스캐너(nuclei + metasploit)를 활성화한다.
 // progress는 진행 상황 출력 대상이다(보통 os.Stderr). 각 스캐너와 오케스트레이터에 주입한다.
-func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
+// 반환하는 cleanup 함수는 공유 msfconsole 세션 등 프로그램 수명 동안 유지되는 자원을 종료한다(없으면 no-op).
+func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*service.Orchestrator, func()) {
 	useNmap := opts.Nmap // -full은 외부 도구가 필요 없는 내장 TCP 스캐너를 사용한다
 	useNuclei := opts.Nuclei || opts.Full
-	useMSF := opts.MSF || opts.Full
+	useMSF := opts.MSF                          // 고정 카탈로그(실제 익스플로잇)는 명시적 -msf에서만
+	useMSFSearch := opts.MSFSearch || opts.Full // 동적 검색(안전 검증)은 -full의 기본 msf 방식
 
 	// PATH에 없어도 go install 위치(GOPATH/bin) 등에서 실행 파일을 찾아 전체 경로로 실행한다.
 	var scanners []service.VulnerabilityScanner
@@ -105,6 +111,13 @@ func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 		s := service.NewMetasploitScanner(service.ToolPath("msfconsole"))
 		s.SetProgress(progress)
 		scanners = append(scanners, s)
+	}
+	var searchScanner *service.MSFSearchScanner
+	if useMSFSearch {
+		// 감지된 제품으로 msf 모듈을 동적 검색하고 check로 안전 검증한다("서비스 인식 → 적용 취약점 검색").
+		searchScanner = service.NewMSFSearchScanner(service.ToolPath("msfconsole"))
+		searchScanner.SetProgress(progress)
+		scanners = append(scanners, searchScanner)
 	}
 
 	// 취약점 스캐너가 하나 이상이면 MultiScanner로 묶어 순차 적용한다.
@@ -149,7 +162,21 @@ func buildOrchestrator(opts Options, progress io.Writer) *service.Orchestrator {
 		en.SetProgress(progress)
 		orch.SetEnricher(en)
 	}
-	return orch
+
+	// 공유 msfconsole 세션: msf-search가 활성이면 msfconsole을 1회만 부팅해 프로그램 수명 동안 유지한다.
+	// (매 검색·검증마다 새로 부팅하던 낭비를 없앤다.) 시작에 실패하면 개별 부팅(폴백)으로 동작한다.
+	cleanup := func() {}
+	if searchScanner != nil {
+		sess := service.NewMSFSession(service.ToolPath("msfconsole"))
+		sess.SetProgress(progress)
+		if err := sess.Start(ctx); err == nil {
+			searchScanner.SetSession(sess)
+			cleanup = func() { sess.Close() } // 프로그램 종료 시 세션도 함께 종료한다.
+		} else {
+			fmt.Fprintf(progress, "[!] msfconsole 세션 시작 실패(개별 실행으로 대체): %v\n", err)
+		}
+	}
+	return orch, cleanup
 }
 
 // requiredTool은 활성화된 옵션과 그에 필요한 외부 도구(실행 파일)를 짝지은 것이다.
@@ -165,7 +192,7 @@ func ensureTools(ctx context.Context, opts Options, in io.Reader, out io.Writer)
 	tools := []requiredTool{
 		{opts.Nmap, "nmap"},
 		{opts.Nuclei || opts.Full, "nuclei"},
-		{opts.MSF || opts.Full, "msfconsole"},
+		{opts.MSF || opts.MSFSearch || opts.Full, "msfconsole"},
 	}
 
 	for _, t := range tools {
