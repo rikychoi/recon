@@ -89,6 +89,10 @@ nmap -sV        →   제품/버전 인식     →   msf search로 모듈 발굴
 1. **제품 인식** — `nmap -sV`가 포트의 제품/버전을 식별합니다(예: `Apache Struts`).
 2. **모듈 동적 검색** — 그 제품명으로 msfconsole `search`를 실행해 **적용 가능한 익스플로잇 모듈을
    실시간으로 발굴**합니다. 고정 목록이 아니라 **Metasploit이 가진 전체 모듈**이 대상이라 커버리지가 넓습니다.
+   - **버전 정밀 모드(`-nvd`)** — nmap이 CPE(제품+버전)를 식별했으면, 그 버전에 해당하는 **CVE 목록을
+     NVD에서 조회**한 뒤 `search cve:...`로 **버전에 정확히 해당하는 모듈만** 검색합니다.
+     (예: `Apache httpd 2.4.49` → NVD가 CVE 수십 개 → 그 중 msf 모듈이 있는 것만 압축 → check.)
+     CPE가 없거나(예: Struts 같은 앱-계층) 조회 결과가 없으면 **제품명 검색으로 자동 폴백**합니다.
 3. **안전 검증(check)** — 발굴한 모듈을 실제 공격(exploit) 대신 **`check`(비침투 검증)** 로만 실행해
    "이 대상이 정말 취약한가"를 확인합니다. 셸을 따거나 페이로드를 던지지 않으므로 **부작용이 없습니다.**
 4. **결과 기록** — `check`가 취약(또는 취약 추정)으로 판정한 모듈만 취약점으로 남기고,
@@ -194,7 +198,7 @@ go run ./cmd/recon -domain example.com -full -format json
 | `-full` | `false` | 내장 포트스캔 + `nuclei` + **`-msf-search`(안전 검증)** 를 한 번에 |
 | `-allow-public` | `false` | 공인(외부) IP 대상 스캔 허용. **기본은 사설/로컬 IP만** 스캔하고 공인 IP는 경고 후 제외 |
 | `-enrich` | `true` | 발견된 취약점에 **EPSS**(악용 확률) · **CISA KEV**(실제 악용 중) 정보를 보강 (외부 API 조회) |
-| `-nvd` | `false` | CVSS가 비어 있는 취약점을 **NVD**로 보강 (레이트 제한이 있어 기본 비활성) |
+| `-nvd` | `false` | **NVD 연동.** msf-search에서 **CPE(버전)→CVE 목록→모듈**로 정밀 검색하고, CVSS 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성) |
 | `-takeover` | `true` | **서브도메인 탈취**(댕글링 CNAME) 탐지 (DNS 조회만 수행, 부작용 없음) |
 
 > 포트 스캔 엔진은 `-nmap`이 있으면 nmap을, 없으면(`-portscan`/`-full`) 내장 스캐너를 씁니다.

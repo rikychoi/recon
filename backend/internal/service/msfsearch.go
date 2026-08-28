@@ -27,11 +27,12 @@ import (
 //  3. 한 번의 msfconsole 부팅으로 후보 모듈들을 대상에 `check` 실행하여 취약 여부를 검증한다.
 //  4. 검증에서 취약으로 판정된 모듈만 취약점으로 기록한다(가능하면 info에서 CVE도 추출).
 type MSFSearchScanner struct {
-	binary        string    // msfconsole 경로 (기본 "msfconsole")
-	runner        msfRunner // msfconsole 실행기(기본 oneShotMSF, 공유 세션 주입 가능)
-	progress      io.Writer // 진행 상황 출력 대상(nil이면 미출력)
-	maxPerService int       // 서비스(검색어)당 검증할 모듈 상한
-	rankFilter    string    // search rank 필터(예: "gte300" = normal 이상)
+	binary        string      // msfconsole 경로 (기본 "msfconsole")
+	runner        msfRunner   // msfconsole 실행기(기본 oneShotMSF, 공유 세션 주입 가능)
+	resolver      CVEResolver // CPE(버전)→CVE 조회기(nil이면 제품명 검색만 사용)
+	progress      io.Writer   // 진행 상황 출력 대상(nil이면 미출력)
+	maxPerService int         // 서비스(검색어)당 검증할 모듈 상한
+	rankFilter    string      // search rank 필터(예: "gte300" = normal 이상)
 }
 
 const (
@@ -70,6 +71,10 @@ func (s *MSFSearchScanner) SetSession(sess msfRunner) {
 		s.runner = sess
 	}
 }
+
+// SetCVEResolver는 CPE(버전)→CVE 조회기를 지정한다. 지정하면 nmap이 제품·버전을 식별한 포트에 대해
+// "버전 → CVE 목록 → 그 CVE를 가진 모듈"로 정밀 검색하고, CPE가 없으면 제품명 검색으로 폴백한다.
+func (s *MSFSearchScanner) SetCVEResolver(r CVEResolver) { s.resolver = r }
 
 // ansiPattern은 msfconsole 출력의 ANSI 색상 escape 코드를 제거하기 위한 정규식이다.
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -206,36 +211,27 @@ func (s *MSFSearchScanner) Scan(ctx context.Context, targets []model.Port) ([]mo
 		return nil, nil
 	}
 
-	// 1) 검색어별로 대상 포트를 묶는다(같은 제품이면 한 번만 검색).
-	termPorts := make(map[string][]model.Port)
-	var terms []string
-	for _, p := range targets {
-		term := searchTerm(p)
-		if term == "" {
-			continue
-		}
-		if _, ok := termPorts[term]; !ok {
-			terms = append(terms, term)
-		}
-		termPorts[term] = append(termPorts[term], p)
-	}
-	if len(terms) == 0 {
+	// 1) 대상 포트를 발굴 그룹으로 묶는다.
+	//    CPE(버전)와 CVE 조회기가 있으면 버전 정밀 그룹(같은 CPE), 없으면 제품명 그룹(같은 제품)으로
+	//    묶어 각 그룹당 검색을 한 번만 수행한다.
+	groups := s.buildGroups(targets)
+	if len(groups) == 0 {
 		return nil, nil
 	}
 
-	// 2) 발굴: 한 번의 msfconsole 부팅으로 모든 검색어를 실행한다.
-	progressf(s.progress, "    - msf-search: 제품 %d종에 대해 적용 모듈 검색 중...\n", len(terms))
-	candidates := s.discover(ctx, terms)
+	// 2) 발굴: 한 번의 msfconsole 부팅으로 모든 그룹의 검색을 실행한다.
+	progressf(s.progress, "    - msf-search: %d개 대상군에 대해 적용 모듈 검색 중...\n", len(groups))
+	candidates := s.discover(ctx, groups)
 
-	// 3) 검증 작업 구성: 검색어별 후보 모듈(상한) × 해당 제품 포트.
+	// 3) 검증 작업 구성: 그룹별 후보 모듈(상한) × 해당 그룹 포트.
 	var tasks []verifyTask
-	for _, term := range terms {
-		mods := candidates[term]
+	for gi, g := range groups {
+		mods := candidates[gi]
 		if len(mods) > s.maxPerService {
 			mods = mods[:s.maxPerService]
 		}
 		for _, m := range mods {
-			for _, p := range termPorts[term] {
+			for _, p := range g.ports {
 				tasks = append(tasks, verifyTask{mod: m, host: p.Target, rport: p.Number})
 			}
 		}
@@ -281,25 +277,75 @@ func (s *MSFSearchScanner) Scan(ctx context.Context, targets []model.Port) ([]mo
 	return vulns, nil
 }
 
-// discover는 검색어별로 후보 모듈을 발굴한다. 모든 검색을 한 msfconsole 부팅에서 실행하고,
-// 각 검색 결과는 임시 CSV 파일로 받아 파싱한다. 실패한 검색은 빈 결과로 처리한다.
-func (s *MSFSearchScanner) discover(ctx context.Context, terms []string) map[string][]discoveredModule {
-	result := make(map[string][]discoveredModule)
+// discoGroup은 한 번의 검색으로 처리할 대상 묶음이다.
+// cpe가 있으면 버전 정밀(CVE 기반) 검색을, 없으면 term(제품명) 검색을 사용한다.
+type discoGroup struct {
+	label string       // 로그 표시용(CPE 또는 제품명)
+	term  string       // 제품명 검색어(폴백용)
+	cpe   string       // 버전 포함 CPE(있으면 CVE 기반 검색)
+	ports []model.Port // 이 그룹의 대상 포트
+}
 
-	// 검색어별 임시 CSV 경로를 만들고, 하나의 리소스 스크립트로 모든 search를 실행한다.
-	files := make(map[string]string, len(terms))
+// buildGroups는 대상 포트를 발굴 그룹으로 묶는다.
+// CVE 조회기가 있고 포트에 버전 포함 CPE가 있으면 CPE 단위(버전 정밀)로,
+// 아니면 제품명(검색어) 단위로 묶어 그룹당 검색이 한 번만 이뤄지게 한다.
+func (s *MSFSearchScanner) buildGroups(targets []model.Port) []*discoGroup {
+	byKey := make(map[string]*discoGroup)
+	var order []string
+	for _, p := range targets {
+		term := searchTerm(p)
+		useCPE := s.resolver != nil && cpeToVirtualMatch(p.CPE) != ""
+
+		var key, cpe, label string
+		if useCPE {
+			cpe = p.CPE
+			key = "cpe:" + strings.ToLower(cpe)
+			label = cpe
+		} else {
+			if term == "" {
+				continue // CPE도 제품명도 없으면 검색할 근거가 없다.
+			}
+			key = "term:" + term
+			label = term
+		}
+
+		g, ok := byKey[key]
+		if !ok {
+			g = &discoGroup{label: label, term: term, cpe: cpe}
+			byKey[key] = g
+			order = append(order, key)
+		}
+		g.ports = append(g.ports, p)
+	}
+	groups := make([]*discoGroup, 0, len(order))
+	for _, k := range order {
+		groups = append(groups, byKey[k])
+	}
+	return groups
+}
+
+// discover는 그룹별로 후보 모듈을 발굴한다. 그룹마다 검색어를 정한 뒤(버전 기반 CVE 또는 제품명),
+// 모든 검색을 한 msfconsole 부팅에서 실행하고 각 결과 CSV를 파싱한다. 결과는 그룹 인덱스로 반환한다.
+func (s *MSFSearchScanner) discover(ctx context.Context, groups []*discoGroup) map[int][]discoveredModule {
+	result := make(map[int][]discoveredModule)
+
+	files := make(map[int]string, len(groups))
 	var cmds []string
-	for _, term := range terms {
+	for gi, g := range groups {
+		filter := s.searchFilter(ctx, g) // 버전 기반 CVE 필터 또는 제품명
+		if filter == "" {
+			continue
+		}
 		f, err := os.CreateTemp("", "recon-msf-*.csv")
 		if err != nil {
 			continue
 		}
 		path := f.Name()
 		f.Close()
-		files[term] = path
+		files[gi] = path
 		// type:exploit + check:Yes로 "check로 안전 검증 가능한 익스플로잇"만 후보로 좁힌다.
 		cmds = append(cmds, fmt.Sprintf("search %s type:exploit check:Yes rank:%s -c -o %s",
-			sanitizeTerm(term), s.rankFilter, path))
+			filter, s.rankFilter, path))
 	}
 	if len(cmds) == 0 {
 		return result
@@ -315,12 +361,35 @@ func (s *MSFSearchScanner) discover(ctx context.Context, terms []string) map[str
 		progressf(s.progress, "    - msf-search: 검색 실행 실패(건너뜀): %v\n", err)
 		// 일부 CSV는 생성됐을 수 있으므로 계속 진행하여 읽어 본다.
 	}
-	for term, path := range files {
+	for gi, path := range files {
 		if data, err := os.ReadFile(path); err == nil {
-			result[term] = parseSearchCSV(data)
+			result[gi] = parseSearchCSV(data)
 		}
 	}
 	return result
+}
+
+// searchFilter는 한 그룹에 사용할 search 필터를 만든다.
+// CPE가 있으면 NVD로 버전에 해당하는 CVE 목록을 받아 `cve:...`(OR) 필터를 만들고(정밀),
+// CPE가 없거나 조회에 실패하면 제품명 검색어로 폴백한다. 둘 다 없으면 빈 문자열.
+func (s *MSFSearchScanner) searchFilter(ctx context.Context, g *discoGroup) string {
+	if g.cpe != "" && s.resolver != nil {
+		cves := s.resolver.ResolveCVEs(ctx, g.cpe)
+		if len(cves) > 0 {
+			parts := make([]string, 0, len(cves))
+			for _, c := range cves {
+				parts = append(parts, "cve:"+c)
+			}
+			progressf(s.progress, "    - msf-search: [%s] 버전 기반 — CVE %d개로 모듈 검색\n", g.label, len(cves))
+			return strings.Join(parts, " ")
+		}
+		progressf(s.progress, "    - msf-search: [%s] 해당 CVE 없음 → 제품명 검색으로 폴백\n", g.label)
+	}
+	if g.term == "" {
+		return ""
+	}
+	progressf(s.progress, "    - msf-search: [%s] 제품명 기반 모듈 검색\n", g.label)
+	return sanitizeTerm(g.term)
 }
 
 // verify는 검증 작업들을 하나의 msfconsole 부팅에서 순차 실행한다.

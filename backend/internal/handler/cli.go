@@ -48,7 +48,7 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.Full, "full", false, "자산 식별부터 포트 스캔까지 포함한 전체 파이프라인 실행 (내장 포트 스캔 + nuclei + metasploit)")
 	fs.BoolVar(&opts.AllowPublic, "allow-public", false, "공인(외부) IP 대상 스캔 허용 (기본: 사설/로컬 IP만 스캔, 공인 IP는 경고 후 제외)")
 	fs.BoolVar(&opts.Enrich, "enrich", true, "발견된 취약점에 CVE 보강(EPSS 악용확률/CISA KEV) 적용 (외부 API 조회)")
-	fs.BoolVar(&opts.NVD, "nvd", false, "CVSS가 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성)")
+	fs.BoolVar(&opts.NVD, "nvd", false, "NVD 연동: msf-search에서 CPE(버전)→CVE 목록으로 모듈을 정밀 검색하고, CVSS 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성)")
 	fs.BoolVar(&opts.Takeover, "takeover", true, "서브도메인 탈취(댕글링 CNAME) 탐지 (DNS 조회만 수행)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -118,6 +118,12 @@ func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*
 		// 감지된 제품으로 msf 모듈을 동적 검색하고 check로 안전 검증한다("서비스 인식 → 적용 취약점 검색").
 		searchScanner = service.NewMSFSearchScanner(service.ToolPath("msfconsole"))
 		searchScanner.SetProgress(progress)
+		// -nvd 지정 시: CPE(버전) → NVD로 CVE 목록 조회 → 그 CVE로 모듈 검색(버전 정밀). 없으면 제품명 검색.
+		if opts.NVD {
+			res := service.NewNVDResolver(nil)
+			res.SetProgress(progress)
+			searchScanner.SetCVEResolver(res)
+		}
 		scanners = append(scanners, searchScanner)
 	}
 
