@@ -34,7 +34,11 @@ type Orchestrator struct {
 	progressMu       sync.Mutex           // 병렬 구간에서 진행 로그 출력을 직렬화한다.
 	assetConcurrency int                  // 자산별 파이프라인 동시 실행 상한
 	allowPublic      bool                 // 공인(외부) IP 대상 스캔 허용 여부(기본 false=차단)
+	includeInfo      bool                 // 정보성(info/CVSS 0) 결과를 보고서에 포함할지(기본 false=제외)
 }
+
+// SetIncludeInfo는 정보성(info) 결과를 취약점 목록에 포함할지 지정한다(기본 false=제외).
+func (o *Orchestrator) SetIncludeInfo(v bool) { o.includeInfo = v }
 
 // SetTakeover는 서브도메인 탈취 탐지기를 지정한다(nil이면 해당 단계를 건너뛴다).
 func (o *Orchestrator) SetTakeover(t TakeoverDetector) { o.takeover = t }
@@ -206,7 +210,25 @@ func (o *Orchestrator) finishVulns(ctx context.Context, vulns []model.Vulnerabil
 		vulns = o.enricher.Enrich(ctx, vulns)
 		sortVulns(vulns)
 	}
+	// 정보성(info) 결과 제외: nuclei의 서비스 탐지 같은 CVSS 0/info 항목은 취약점이 아니므로 뺀다.
+	// -include-info로 유지할 수 있으며, 보강 이후에 걸러 확인된 취약점(high/medium)은 남는다.
+	if !o.includeInfo {
+		vulns = filterOutInfo(vulns)
+	}
 	return vulns
+}
+
+// filterOutInfo는 심각도가 info인(=취약점이 아닌 탐지·정보성) 항목을 제거한다.
+// CVSS 값이 아니라 심각도로 판정하므로, 보강 전 CVSS가 0인 확인된 취약점(high/medium)은 유지된다.
+func filterOutInfo(vulns []model.Vulnerability) []model.Vulnerability {
+	kept := vulns[:0]
+	for _, v := range vulns {
+		if strings.EqualFold(v.Severity, "info") {
+			continue
+		}
+		kept = append(kept, v)
+	}
+	return kept
 }
 
 // scanOne은 하나의 자산(IP)에 대해 포트 스캔과 취약점 점검을 순차 실행한다.

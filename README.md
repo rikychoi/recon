@@ -200,6 +200,7 @@ go run ./cmd/recon -domain example.com -full -format json
 | `-enrich` | `true` | 발견된 취약점에 **EPSS**(악용 확률) · **CISA KEV**(실제 악용 중) 정보를 보강 (외부 API 조회) |
 | `-nvd` | `false` | **NVD 연동.** msf-search에서 **CPE(버전)→CVE 목록→모듈**로 정밀 검색하고, CVSS 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성) |
 | `-takeover` | `true` | **서브도메인 탈취**(댕글링 CNAME) 탐지 (DNS 조회만 수행, 부작용 없음) |
+| `-include-info` | `false` | 정보성(info/CVSS 0) 결과도 포함. **기본은 실제 취약점만** 표시(nuclei 서비스 탐지 등 제외) |
 
 > 포트 스캔 엔진은 `-nmap`이 있으면 nmap을, 없으면(`-portscan`/`-full`) 내장 스캐너를 씁니다.
 

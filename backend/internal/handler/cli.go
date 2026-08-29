@@ -30,6 +30,7 @@ type Options struct {
 	Enrich      bool          // 발견된 취약점에 CVE 보강(EPSS/KEV) 적용(기본 true)
 	NVD         bool          // CVSS가 비어 있는 취약점을 NVD로 보강(기본 false, 레이트 제한)
 	Takeover    bool          // 서브도메인 탈취(댕글링 CNAME) 탐지(기본 true)
+	IncludeInfo bool          // 정보성(info/CVSS 0) 결과를 포함(기본 false=제외)
 }
 
 // Run은 명령행 인자를 파싱하여 점검을 실행하고 결과를 출력한다.
@@ -50,6 +51,7 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.Enrich, "enrich", true, "발견된 취약점에 CVE 보강(EPSS 악용확률/CISA KEV) 적용 (외부 API 조회)")
 	fs.BoolVar(&opts.NVD, "nvd", false, "NVD 연동: msf-search에서 CPE(버전)→CVE 목록으로 모듈을 정밀 검색하고, CVSS 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성)")
 	fs.BoolVar(&opts.Takeover, "takeover", true, "서브도메인 탈취(댕글링 CNAME) 탐지 (DNS 조회만 수행)")
+	fs.BoolVar(&opts.IncludeInfo, "include-info", false, "정보성(info/CVSS 0) 결과도 포함 (기본: 실제 취약점만 표시)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -155,6 +157,7 @@ func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*
 	)
 	orch.SetProgress(progress)
 	orch.SetAllowPublic(opts.AllowPublic)
+	orch.SetIncludeInfo(opts.IncludeInfo)
 
 	// 서브도메인 탈취 탐지: HTTP 없이 DNS만으로 판정하므로 기본 활성이며 비용이 낮다.
 	if opts.Takeover {
