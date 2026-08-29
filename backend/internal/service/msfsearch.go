@@ -203,6 +203,21 @@ type verifyTask struct {
 	mod   discoveredModule
 	host  string
 	rport int
+	svc   string // 포트 서비스명(http/https 등) — SSL 설정 판정에 사용
+}
+
+// sslSetting은 서비스/포트로부터 msf 모듈의 SSL 옵션 설정 명령을 만든다.
+// http 모듈은 대상이 평문 HTTP인데 기본이 SSL(HTTPS)이면 연결에 실패하므로 명시적으로 맞춰준다.
+// 웹 서비스가 아니면 빈 문자열(모듈 기본값 유지).
+func sslSetting(service string, port int) string {
+	s := strings.ToLower(service)
+	if strings.Contains(s, "https") || strings.Contains(s, "ssl") || port == 443 || port == 8443 {
+		return "set SSL true"
+	}
+	if strings.Contains(s, "http") || port == 80 || port == 8080 || port == 8000 || port == 8888 {
+		return "set SSL false"
+	}
+	return ""
 }
 
 // Scan은 대상 포트의 제품을 근거로 모듈을 검색·검증하여 확인된 취약점을 반환한다.
@@ -232,7 +247,7 @@ func (s *MSFSearchScanner) Scan(ctx context.Context, targets []model.Port) ([]mo
 		}
 		for _, m := range mods {
 			for _, p := range g.ports {
-				tasks = append(tasks, verifyTask{mod: m, host: p.Target, rport: p.Number})
+				tasks = append(tasks, verifyTask{mod: m, host: p.Target, rport: p.Number, svc: p.Service})
 			}
 		}
 	}
@@ -397,15 +412,18 @@ func (s *MSFSearchScanner) searchFilter(ctx context.Context, g *discoGroup) stri
 func (s *MSFSearchScanner) verify(ctx context.Context, tasks []verifyTask) map[int]checkOutcome {
 	var cmds []string
 	for i, t := range tasks {
-		// 마커 → info(CVE 추출용) → 모듈 로드 → 대상 설정 → check(비침투 검증) — 각각 개별 명령으로.
+		// 마커 → info(CVE 추출용) → 모듈 로드 → 대상 설정 → (SSL 설정) → check(비침투 검증)
 		cmds = append(cmds,
 			fmt.Sprintf("echo ===RECON%d===", i),
 			"info "+t.mod.fullName,
 			"use "+t.mod.fullName,
 			"set RHOSTS "+t.host,
 			fmt.Sprintf("set RPORT %d", t.rport),
-			"check",
 		)
+		if ssl := sslSetting(t.svc, t.rport); ssl != "" {
+			cmds = append(cmds, ssl) // http/https에 맞춰 SSL 설정(모듈 기본이 안 맞아 연결 실패하는 것 방지)
+		}
+		cmds = append(cmds, "check")
 	}
 	out, err := s.runner.RunMSF(ctx, cmds)
 	if err != nil {
