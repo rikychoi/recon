@@ -356,8 +356,8 @@ func (s *MSFSearchScanner) discover(ctx context.Context, groups []*discoGroup) m
 		}
 	}()
 
-	script := strings.Join(cmds, "; ") // exit는 실행기가 관리하므로 넣지 않는다.
-	if _, err := s.runner.RunMSF(ctx, script); err != nil {
+	// 각 search를 개별 명령으로 실행한다(세션은 개행, one-shot은 "; "로 조립).
+	if _, err := s.runner.RunMSF(ctx, cmds); err != nil {
 		progressf(s.progress, "    - msf-search: 검색 실행 실패(건너뜀): %v\n", err)
 		// 일부 CSV는 생성됐을 수 있으므로 계속 진행하여 읽어 본다.
 	}
@@ -395,15 +395,19 @@ func (s *MSFSearchScanner) searchFilter(ctx context.Context, g *discoGroup) stri
 // verify는 검증 작업들을 하나의 msfconsole 부팅에서 순차 실행한다.
 // 각 작업 앞에 고유 마커(echo)를 찍어 출력에서 결과를 작업 인덱스에 귀속시킨다.
 func (s *MSFSearchScanner) verify(ctx context.Context, tasks []verifyTask) map[int]checkOutcome {
-	var b strings.Builder
+	var cmds []string
 	for i, t := range tasks {
-		// 마커 → info(CVE 추출용) → 모듈 로드 → 대상 설정 → check(비침투 검증)
-		fmt.Fprintf(&b, "echo ===RECON%d===; info %s; use %s; set RHOSTS %s; set RPORT %d; check; ",
-			i, t.mod.fullName, t.mod.fullName, t.host, t.rport)
+		// 마커 → info(CVE 추출용) → 모듈 로드 → 대상 설정 → check(비침투 검증) — 각각 개별 명령으로.
+		cmds = append(cmds,
+			fmt.Sprintf("echo ===RECON%d===", i),
+			"info "+t.mod.fullName,
+			"use "+t.mod.fullName,
+			"set RHOSTS "+t.host,
+			fmt.Sprintf("set RPORT %d", t.rport),
+			"check",
+		)
 	}
-	// exit는 실행기가 관리하므로 넣지 않는다(공유 세션을 닫지 않기 위해).
-
-	out, err := s.runner.RunMSF(ctx, strings.TrimRight(b.String(), "; "))
+	out, err := s.runner.RunMSF(ctx, cmds)
 	if err != nil {
 		progressf(s.progress, "    - msf-search: 검증 실행 경고: %v\n", err)
 	}

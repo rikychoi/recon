@@ -119,23 +119,24 @@ type msfRun struct {
 	index  int       // 진행 표시용 현재 작업 번호(0-based)
 }
 
-// buildResourceScript는 msfRun 설정으로 msfconsole 리소스 명령을 만든다.
-func buildResourceScript(r msfRun) string {
-	s := "use " + r.mod.Name + "; set RHOSTS " + r.rhosts
+// buildResourceCommands는 msfRun 설정으로 msfconsole 명령 목록을 만든다.
+// 명령을 문자열로 이어붙이지 않고 목록으로 반환한다(실행기가 -x는 "; ", 세션은 개행으로 조립).
+func buildResourceCommands(r msfRun) []string {
+	cmds := []string{"use " + r.mod.Name, "set RHOSTS " + r.rhosts}
 	if r.rport != "" {
-		s += "; set RPORT " + r.rport
+		cmds = append(cmds, "set RPORT "+r.rport)
 	}
 	if r.mod.Payload != "" {
-		s += "; set PAYLOAD " + r.mod.Payload
+		cmds = append(cmds, "set PAYLOAD "+r.mod.Payload)
 	}
 	if r.lhost != "" {
-		s += "; set LHOST " + r.lhost
+		cmds = append(cmds, "set LHOST "+r.lhost)
 	}
 	if r.lport > 0 {
-		s += "; set LPORT " + strconv.Itoa(r.lport)
+		cmds = append(cmds, "set LPORT "+strconv.Itoa(r.lport))
 	}
-	// exit는 실행기가 관리한다(oneShotMSF는 뒤에 "; exit"를 붙이고, 공유 세션은 붙이지 않는다).
-	return s + "; run"
+	// exit는 실행기가 관리한다.
+	return append(cmds, "run")
 }
 
 // isExploitModule은 리버스/바인드 페이로드가 필요한 exploit 계열 모듈인지 판정한다.
@@ -299,9 +300,9 @@ func (m *MetasploitScanner) Scan(ctx context.Context, targets []model.Port) ([]m
 func (m *MetasploitScanner) runTask(ctx context.Context, run msfRun) []model.Vulnerability {
 	m.logf("    - [%d/%d] msf %s (CVE=%s RPORT=%s LPORT=%d) ...\n",
 		run.index+1, run.total, run.mod.Name, run.mod.CVE, run.rport, run.lport)
-	script := buildResourceScript(run)
+	cmds := buildResourceCommands(run)
 	// 실행기를 통해 실행한다. 공유 세션이면 하나의 msfconsole에서, 폴백이면 새 프로세스로 실행된다.
-	out, err := m.runner.RunMSF(ctx, script)
+	out, err := m.runner.RunMSF(ctx, cmds)
 	if err != nil {
 		return nil
 	}

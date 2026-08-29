@@ -9,10 +9,10 @@ import (
 
 // fakeRunner는 스크립트를 받아 미리 지정한 출력을 돌려주는 msfRunner 가짜 구현이다.
 type fakeRunner struct {
-	fn func(script string) (string, error)
+	fn func(cmds []string) (string, error)
 }
 
-func (f fakeRunner) RunMSF(_ context.Context, script string) (string, error) { return f.fn(script) }
+func (f fakeRunner) RunMSF(_ context.Context, cmds []string) (string, error) { return f.fn(cmds) }
 
 // TestReadUntilMarker는 마커 줄 전까지의 출력을 반환하고, ANSI 코드가 섞인 마커도 인식하는지 검증한다.
 func TestReadUntilMarker(t *testing.T) {

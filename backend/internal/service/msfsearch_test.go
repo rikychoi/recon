@@ -78,7 +78,8 @@ func TestParseCheckOutput(t *testing.T) {
 // TestMSFSearchScanner_Scan은 가짜 msfconsole 실행기로 발굴→검증→기록의 전체 흐름을 검증한다.
 func TestMSFSearchScanner_Scan(t *testing.T) {
 	s := NewMSFSearchScanner("")
-	s.runner = fakeRunner{fn: func(script string) (string, error) {
+	s.runner = fakeRunner{fn: func(cmds []string) (string, error) {
+		script := strings.Join(cmds, "\n")
 		// 발굴 단계: search 스크립트면 -o 경로에 CSV를 쓴다.
 		if strings.Contains(script, "search ") {
 			csv := `#,Full Name,Disclosure Date,Rank,Check,Name

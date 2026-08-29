@@ -30,3 +30,6 @@ build/
 *.swo
 
 CLAUDE.md
+report.json
+run.log
+*.log

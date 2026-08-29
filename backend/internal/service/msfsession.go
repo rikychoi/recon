@@ -12,21 +12,27 @@ import (
 	"time"
 )
 
-// msfRunner는 msfconsole 명령 스크립트를 실행하고 출력을 반환하는 실행기이다.
+// msfRunner는 msfconsole 명령들을 실행하고 출력을 반환하는 실행기이다.
 // 구현으로는 프로그램 수명 동안 하나의 msfconsole을 유지하는 MSFSession(권장)과,
 // 호출마다 새로 부팅하는 oneShotMSF(폴백)가 있다.
+//
+// 입력은 개별 명령의 목록이다. 중요: msfconsole은 `-x`에서만 `;`를 명령 구분자로 인식하고
+// 대화형(stdin)에서는 인식하지 않으므로, 명령을 문자열로 이어붙이지 않고 목록으로 넘겨
+// 각 실행기가 알맞은 방식(-x는 "; ", 세션은 개행)으로 조립하게 한다.
 type msfRunner interface {
-	// RunMSF는 스크립트(세미콜론으로 구분된 msf 명령들)를 실행하고 출력 텍스트를 반환한다.
-	// 스크립트에 `exit`를 포함해서는 안 된다(세션 종료는 실행기가 관리한다).
-	RunMSF(ctx context.Context, script string) (string, error)
+	// RunMSF는 명령 목록을 실행하고 출력 텍스트를 반환한다.
+	// 명령에 `exit`를 포함해서는 안 된다(세션 종료는 실행기가 관리한다).
+	RunMSF(ctx context.Context, cmds []string) (string, error)
 }
 
 // oneShotMSF는 호출마다 msfconsole을 새로 부팅해 명령을 실행하는 실행기이다.
 // 공유 세션(MSFSession)을 시작하지 못했을 때의 폴백이며, 실행 후 `exit`으로 종료된다.
 type oneShotMSF struct{ binary string }
 
-// RunMSF는 msfconsole을 `-q -x <script>; exit`로 한 번 실행하고 출력을 반환한다.
-func (o oneShotMSF) RunMSF(ctx context.Context, script string) (string, error) {
+// RunMSF는 명령들을 "; "로 이어 `-q -x "<...>; exit"`로 한 번 실행하고 출력을 반환한다.
+// -x 모드에서는 `;`가 명령 구분자로 동작한다.
+func (o oneShotMSF) RunMSF(ctx context.Context, cmds []string) (string, error) {
+	script := strings.Join(cmds, "; ")
 	cmd := exec.CommandContext(ctx, o.binary, "-q", "-x", script+"; exit")
 	cmd.SysProcAttr = detachedProcAttr()
 	out, err := cmd.CombinedOutput()
@@ -94,8 +100,8 @@ func (s *MSFSession) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	progressf(s.progress, "    - msfconsole 세션 시작(최초 1회 부팅, 수십 초 소요)...\n")
-	// 빈 명령을 보내 마커까지 읽어 부팅 배너를 소진하고 준비 완료를 확인한다.
-	if _, err := s.RunMSF(ctx, ""); err != nil {
+	// 빈 명령 목록을 보내 마커까지 읽어 부팅 배너를 소진하고 준비 완료를 확인한다.
+	if _, err := s.RunMSF(ctx, nil); err != nil {
 		return fmt.Errorf("msfconsole 세션 준비 실패: %w", err)
 	}
 	progressf(s.progress, "    - msfconsole 세션 준비 완료\n")
@@ -104,7 +110,7 @@ func (s *MSFSession) Start(ctx context.Context) error {
 
 // RunMSF는 스크립트를 실행하고 고유 마커가 나타날 때까지의 출력을 반환한다.
 // 명령 실행은 직렬화되며, 스크립트에 exit를 넣어서는 안 된다.
-func (s *MSFSession) RunMSF(ctx context.Context, script string) (string, error) {
+func (s *MSFSession) RunMSF(ctx context.Context, cmds []string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.started {
@@ -114,9 +120,12 @@ func (s *MSFSession) RunMSF(ctx context.Context, script string) (string, error) 
 	marker := fmt.Sprintf("===RECONMARK%d===", s.seq)
 
 	var b strings.Builder
-	if strings.TrimSpace(script) != "" {
-		b.WriteString(script)
-		b.WriteString("\n")
+	for _, c := range cmds {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		b.WriteString(c)
+		b.WriteString("\n") // 명령마다 개행: 대화형 msfconsole은 줄 단위로 명령을 실행한다(;는 -x 전용).
 	}
 	b.WriteString("echo ")
 	b.WriteString(marker)

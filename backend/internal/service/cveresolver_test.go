@@ -72,7 +72,8 @@ func TestMSFSearch_VersionBased(t *testing.T) {
 	var searchScript string
 	s := NewMSFSearchScanner("")
 	s.SetCVEResolver(resolver)
-	s.runner = fakeRunner{fn: func(script string) (string, error) {
+	s.runner = fakeRunner{fn: func(cmds []string) (string, error) {
+		script := strings.Join(cmds, "\n")
 		if strings.Contains(script, "search ") {
 			searchScript = script // 검색 스크립트 캡처
 			// 아무 모듈도 반환하지 않아 검증 단계로 넘어가지 않게 함(빈 CSV)
