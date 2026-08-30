@@ -31,6 +31,7 @@ type Options struct {
 	NVD         bool          // CVSS가 비어 있는 취약점을 NVD로 보강(기본 false, 레이트 제한)
 	Takeover    bool          // 서브도메인 탈취(댕글링 CNAME) 탐지(기본 true)
 	IncludeInfo bool          // 정보성(info/CVSS 0) 결과를 포함(기본 false=제외)
+	Output      string        // 결과를 저장할 파일 경로(비면 stdout)
 }
 
 // Run은 명령행 인자를 파싱하여 점검을 실행하고 결과를 출력한다.
@@ -52,6 +53,7 @@ func Run(args []string) int {
 	fs.BoolVar(&opts.NVD, "nvd", false, "NVD 연동: msf-search에서 CPE(버전)→CVE 목록으로 모듈을 정밀 검색하고, CVSS 없는 취약점을 NVD로 보강 (레이트 제한이 있어 기본 비활성)")
 	fs.BoolVar(&opts.Takeover, "takeover", true, "서브도메인 탈취(댕글링 CNAME) 탐지 (DNS 조회만 수행)")
 	fs.BoolVar(&opts.IncludeInfo, "include-info", false, "정보성(info/CVSS 0) 결과도 포함 (기본: 실제 취약점만 표시)")
+	fs.StringVar(&opts.Output, "output", "", "결과를 지정한 파일에 저장 (예: report.json). 비우면 화면 출력. 진행로그는 항상 stderr")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -85,9 +87,24 @@ func Run(args []string) int {
 		return 1
 	}
 
-	if err := formatter.Format(os.Stdout, result); err != nil {
+	// 출력 대상 결정: -output이 지정되면 해당 파일에 저장하고, 아니면 stdout에 출력한다.
+	out := io.Writer(os.Stdout)
+	if opts.Output != "" {
+		f, err := os.Create(opts.Output)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "출력 파일 생성 실패:", err)
+			return 1
+		}
+		defer f.Close()
+		out = f
+	}
+
+	if err := formatter.Format(out, result); err != nil {
 		fmt.Fprintln(os.Stderr, "출력 실패:", err)
 		return 1
+	}
+	if opts.Output != "" {
+		fmt.Fprintf(os.Stderr, "[*] 보고서 저장 완료: %s\n", opts.Output)
 	}
 	return 0
 }
