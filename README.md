@@ -107,12 +107,18 @@ Metasploit 모듈을 `search`로 **실시간 발굴**한 뒤 `check`(비침투 �
 `-nvd` 지정 시, 인식한 CPE(제품+버전)로 **NVD에서 해당 버전의 CVE 목록**을 받아
 그 CVE를 가진 모듈만 정밀 검색합니다. (예: `Apache httpd 2.4.49` → NVD CVE 수십 개 → 실제 모듈로 압축)
 
-## 4. 서브도메인 탈취 탐지
+## 4. 서브도메인 취약점 (Dangling CNAME) 탐지
 <img width="491" height="437" alt="image" src="https://github.com/user-attachments/assets/86441ec9-5500-4ea1-9f47-10c6af176274" />
+
 desec.io를 이용해 의도적으로 dangling CNAME 생성
 
+<img width="649" height="27" alt="image" src="https://github.com/user-attachments/assets/185e8424-26b1-4ea0-b06a-a6cf587b5fc0" />
 
+1번의 자산식별 명령어 실행
 
+<img width="1437" height="48" alt="image" src="https://github.com/user-attachments/assets/d8db22cb-a852-48de-815b-e33bb7770b12" />
+
+댕글링 cname 탐지 시 취약점으로 출력
 
 
 서브도메인의 CNAME이 서드파티 서비스를 가리키는데 그 대상이 사라진 경우(댕글링 CNAME)를
