@@ -166,9 +166,11 @@ func buildOrchestrator(ctx context.Context, opts Options, progress io.Writer) (*
 		portScanner = ts
 	}
 
+	subScanner := service.NewBruteSubdomainScanner(nil, 20)
+	subScanner.SetProgress(progress) // 와일드카드/하이재킹 감지 등 진행 상황 출력
 	orch := service.NewOrchestratorWithPortScan(
 		service.NewNetDNSResolver(),
-		service.NewBruteSubdomainScanner(nil, 20),
+		subScanner,
 		portScanner,
 		vulnScanner,
 	)
