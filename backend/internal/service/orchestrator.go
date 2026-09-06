@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"sort"
@@ -276,24 +277,50 @@ func (o *Orchestrator) scanOne(ctx context.Context, a *scanAsset) ([]model.Port,
 // allowPublic이 true이면 경고만 출력하고 그대로 통과시킨다.
 func (o *Orchestrator) guardPublicAssets(assets []*scanAsset) []*scanAsset {
 	kept := make([]*scanAsset, 0, len(assets))
+	var publicIPs int                // 공인 IP 자산 개수
+	hostSet := make(map[string]bool) // 관련 호스트명 집합(중복 제거)
+	var hosts []string               // 등장 순서 유지용
+
 	for _, a := range assets {
 		ip := net.ParseIP(a.key)
 		if ip == nil || !isPublicIP(ip) {
 			kept = append(kept, a) // 사설/로컬 IP 또는 IP가 아닌 대상은 그대로 진행한다.
 			continue
 		}
-		if o.allowPublic {
-			progressf(o.progress, "[!] 경고: 공인 IP %s (%s) 대상 — -allow-public 지정으로 진행합니다.\n",
-				a.key, strings.Join(a.hostnames, ", "))
-			kept = append(kept, a)
-			continue
+		publicIPs++
+		for _, h := range a.hostnames {
+			if !hostSet[h] {
+				hostSet[h] = true
+				hosts = append(hosts, h)
+			}
 		}
-		// 공인 IP인데 허용되지 않음 → 스캔에서 제외한다.
-		progressf(o.progress, "[!] 경고: 공인(외부) IP %s (%s) 는 스캔에서 제외했습니다. "+
-			"의도한 대상이면 -allow-public 을 지정하세요. (DNS 하이재킹/오타 여부를 먼저 확인)\n",
-			a.key, strings.Join(a.hostnames, ", "))
+		if o.allowPublic {
+			kept = append(kept, a) // 허용 시 그대로 진행(요약은 아래 한 줄로)
+		}
+	}
+
+	// 공인 IP 경고는 IP마다 찍지 않고 한 줄로 요약한다(대상이 많을 때 로그 폭주 방지).
+	if publicIPs > 0 {
+		hostList := summarizeHosts(hosts)
+		if o.allowPublic {
+			progressf(o.progress, "[!] 공인(외부) IP %d개 (%s) — -allow-public 지정으로 진행합니다.\n",
+				publicIPs, hostList)
+		} else {
+			progressf(o.progress, "[!] 공인(외부) IP %d개 (%s) 는 스캔에서 제외했습니다. "+
+				"의도한 대상이면 -allow-public 을 지정하세요. (DNS 하이재킹/오타 여부를 먼저 확인)\n",
+				publicIPs, hostList)
+		}
 	}
 	return kept
+}
+
+// summarizeHosts는 호스트명 목록을 요약 문자열로 만든다(너무 많으면 앞 몇 개만 + "외 N개").
+func summarizeHosts(hosts []string) string {
+	const max = 6
+	if len(hosts) <= max {
+		return strings.Join(hosts, ", ")
+	}
+	return strings.Join(hosts[:max], ", ") + fmt.Sprintf(" 외 %d개", len(hosts)-max)
 }
 
 // isPublicIP는 인터넷 상의 공인 IP인지 판정한다.
