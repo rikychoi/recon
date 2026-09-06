@@ -60,7 +60,7 @@ func TestTakeoverScanner_LiveCNAMEnotFlagged(t *testing.T) {
 			"live.example.com": "myapp.herokuapp.com",
 		},
 		hosts: map[string][]string{
-			"live.example.com": {"1.2.3.4"}, // 정상 해석됨
+			"myapp.herokuapp.com": {"1.2.3.4"}, // CNAME 대상이 정상 해석됨(살아있음)
 		},
 	}
 	ts := NewTakeoverScanner(res, nil)

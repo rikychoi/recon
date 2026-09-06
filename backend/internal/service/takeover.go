@@ -3,22 +3,22 @@ package service
 import (
 	"context"
 	"io"
-	"net"
 	"strings"
 
 	"github.com/rikychoi/recon/internal/model"
 )
 
-// defaultResolver는 시스템 기본 DNS 리졸버를 반환한다.
-// *net.Resolver는 LookupCNAME/LookupHost를 제공하므로 cnameLookuper를 그대로 만족한다.
+// defaultResolver는 탈취 탐지용 DNS 리졸버를 반환한다.
+// 표준 net.LookupCNAME은 댕글링(대상 NXDOMAIN) 시 CNAME을 얻지 못하므로,
+// TYPE=CNAME 직접 질의를 하는 rawResolver를 사용한다.
 func defaultResolver() cnameLookuper {
-	return net.DefaultResolver
+	return newRawResolver()
 }
 
 // cnameLookuper는 탈취 탐지에 필요한 DNS 조회 최소 인터페이스이다.
-// 실제로는 *net.Resolver를, 테스트에는 가짜 구현을 주입한다.
+// 실제로는 rawResolver를, 테스트에는 가짜 구현을 주입한다.
 type cnameLookuper interface {
-	// LookupCNAME은 호스트의 정규 이름(CNAME 체인의 최종 이름)을 반환한다.
+	// LookupCNAME은 호스트의 CNAME 대상을 반환한다(대상이 해석 불가여도 CNAME이 있으면 반환).
 	LookupCNAME(ctx context.Context, host string) (string, error)
 	// LookupHost는 호스트를 IP로 해석한다. 대상이 사라지면 오류(NXDOMAIN)를 반환한다.
 	LookupHost(ctx context.Context, host string) ([]string, error)
@@ -124,9 +124,10 @@ func (t *TakeoverScanner) check(ctx context.Context, host string) (model.Vulnera
 		return model.Vulnerability{}, false // 알려진 탈취 대상 서비스가 아니다.
 	}
 
-	// CNAME이 서드파티 서비스를 가리키지만 최종 대상이 해석되지 않으면 댕글링(탈취 후보)이다.
-	if addrs, err := t.resolver.LookupHost(ctx, host); err == nil && len(addrs) > 0 {
-		return model.Vulnerability{}, false // 정상적으로 해석되므로 탈취 후보 아님.
+	// CNAME 대상(서드파티 리소스)이 해석되지 않으면 댕글링(탈취 후보)이다.
+	// 호스트가 아니라 CNAME 대상을 확인해야, 호스트 A레코드 캐시에 영향받지 않고 정확히 판정한다.
+	if addrs, err := t.resolver.LookupHost(ctx, cname); err == nil && len(addrs) > 0 {
+		return model.Vulnerability{}, false // 대상이 살아있으므로 탈취 후보 아님.
 	}
 
 	const cvss = 8.1 // 서브도메인 탈취는 고위험(하이재킹→피싱/쿠키 탈취 등)으로 평가한다.
