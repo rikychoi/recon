@@ -53,32 +53,67 @@ nmap이 인식한 서비스 제품·버전에 맞는 점검 모듈을 자동으�
 # 핵심기능
 
 ## 1. 자산 식별
-<img width="850" alt="asset identification" src="이미지_링크" />
+<img width="798" height="21" alt="image" src="https://github.com/user-attachments/assets/468e4af4-e647-4e7c-adb9-52cbda8c0bd2" />
+
+명령어
+<img width="1102" height="122" alt="image" src="https://github.com/user-attachments/assets/178caeda-5e0f-4940-9ea0-0fe7134d046f" />
+
+결과 1 - 서브도메인
+
+<img width="374" height="138" alt="image" src="https://github.com/user-attachments/assets/2ee3a579-9525-4ddf-94e1-9161a46a3a4d" />
+
+결과 2 - DNS 레코드, 메일 서버
 
 대상 도메인의 DNS 레코드(A·CNAME·MX·TXT), 메일 서버, 서브도메인을 조회해 공격 표면을 그립니다.
 같은 IP를 가리키는 호스트는 하나로 묶어 중복 스캔을 방지합니다.
 
-## 2. 서비스 인식 → 적용 취약점 자동 검색·검증 (Metasploit 자동화)
-<img width="850" alt="service to vulnerability" src="이미지_링크" />
+## 2. 서비스 인식 → 적용 취약점 자동 검색 및 검증 (Metasploit 자동화)
+**2, 3번 기능의 이미지는 오픈소스 취약점 실습 플랫폼 vulhub를 대상으로 테스트한 결과입니다.**
+
+<img width="1151" height="23" alt="image" src="https://github.com/user-attachments/assets/6db366ff-d32c-4b95-b46a-4b67a0cd33aa" />
+
+명령어
+
+<img width="677" height="195" alt="image" src="https://github.com/user-attachments/assets/8fafefaf-1a01-4b72-814f-5593bcd9b1b9" />
+
+포트스캔 및 식별된 포트에 대한 취약점점검 실행
+
+<img width="1375" height="172" alt="image" src="https://github.com/user-attachments/assets/fb80b74c-ef60-4946-b922-1a2bf43f7136" />
+
+스캔된 포트 및 식별된 취약점
 
 nmap `-sV`로 포트의 **제품·버전**(예: `Apache httpd 2.4.49`)을 인식하고, 그 제품에 해당하는
 Metasploit 모듈을 `search`로 **실시간 발굴**한 뒤 `check`(비침투 검증)로 실제 취약 여부를 확인합니다.
 어떤 모듈을 써야 하는지 몰라도, "감지된 서비스 → 맞는 취약점 점검"을 도구가 알아서 연결합니다.
 
 ## 3. 버전(CPE) 기반 CVE 정밀 검색
-<img width="850" alt="version based cve lookup" src="이미지_링크" />
+
+<img width="785" height="22" alt="image" src="https://github.com/user-attachments/assets/94d3a00d-deb3-40cf-8654-4ea10fe8ad9e" />
+
+명령어
+
+<img width="858" height="213" alt="image" src="https://github.com/user-attachments/assets/aec0ed6e-2177-457d-a5ef-0551eefa101f" />
+
+포트스캐닝/취약점 점검 실행
+
+<img width="626" height="108" alt="image" src="https://github.com/user-attachments/assets/97788cde-80a3-4a88-8108-17f32a66a915" />
+
+포트스캐닝 결과
+
+<img width="1408" height="62" alt="image" src="https://github.com/user-attachments/assets/b3b14cc8-fdb6-4972-8781-cd97e8fcef87" />
+
+취약점 진단 결과
 
 `-nvd` 지정 시, 인식한 CPE(제품+버전)로 **NVD에서 해당 버전의 CVE 목록**을 받아
 그 CVE를 가진 모듈만 정밀 검색합니다. (예: `Apache httpd 2.4.49` → NVD CVE 수십 개 → 실제 모듈로 압축)
 
-## 4. CVE 위험 우선순위화
-<img width="850" alt="risk prioritization" src="이미지_링크" />
+## 4. 서브도메인 탈취 탐지
+<img width="491" height="437" alt="image" src="https://github.com/user-attachments/assets/86441ec9-5500-4ea1-9f47-10c6af176274" />
+desec.io를 이용해 의도적으로 dangling CNAME 생성
 
-발견된 취약점에 **CVSS**(심각도) · **EPSS**(악용 확률) · **CISA KEV**(실제 악용 중) 정보를 보강해
-**실제 위험이 높은 순서**(KEV → CVSS → EPSS)로 정렬합니다.
 
-## 5. 서브도메인 탈취 탐지
-<img width="850" alt="subdomain takeover" src="이미지_링크" />
+
+
 
 서브도메인의 CNAME이 서드파티 서비스를 가리키는데 그 대상이 사라진 경우(댕글링 CNAME)를
 DNS 조회만으로 탐지해 고위험 취약점으로 보고합니다.
@@ -102,4 +137,4 @@ go run ./cmd/recon -domain example.com -nmap -msf-search -nvd \
 
 <br>
 
-> ⚠️ 본인이 소유하거나 점검 권한을 받은 대상에만 사용하세요. 개발·테스트는 격리된 VM/로컬 환경에서만 수행합니다.
+
